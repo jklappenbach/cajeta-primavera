@@ -1,0 +1,140 @@
+package org.cajeta.cazo.context;
+
+import cajeta.concurrent.FiberLocal;
+
+/**
+ * Request scope — the per-request bag of @Component beans, bound to the
+ * *logical request* rather than to any thread or fiber.
+ *
+ * Built on {@Link FiberLocal}, which is exactly why cazo can serve both
+ * webserver concurrency models with one mechanism:
+ *
+ *  - **thread / fiber-per-request** — the request owns one fiber start to
+ *    finish, so the scope simply IS that fiber's binding. Cajeta's cheap
+ *    fibers make this model scale where OS-thread-per-request cannot.
+ *  - **threadpool over completion ports** (epoll / io_uring / IOCP) — a
+ *    request is NOT pinned to a thread; its continuation hops pool threads
+ *    as I/O completes. A thread-local request bag would be a correctness bug
+ *    here (you would read another request's beans). Because the scope rides
+ *    a FiberLocal binding, it travels WITH the request: structured fan-out
+ *    inherits it automatically, and an unstructured handoff carries it via a
+ *    `FiberContext` snapshot. The scope follows the request across thread
+ *    hops; it never leaks across requests.
+ *
+ * cazo's executor (docs/Concurrency.md) calls `enter` once per accepted
+ * request; handler code anywhere on the call path reaches the active bag via
+ * `current()` with no parameter threading.
+ *
+ * ```cajeta
+ * RequestScope.enter(() -> {
+ *     handler.handle(request);     // current() is live for the whole call tree
+ * });                              // the bag — and every bean in it — drops here
+ * ```
+ */
+public class RequestScope {
+    // Identity-keyed FiberLocal: the single process-wide key under which each
+    // request's ScopeMap is bound. The binding (and its owned ScopeMap) is
+    // per-fiber/per-request; this object carries no per-request state.
+    //
+    // Lazily constructed through `ensure()` rather than a static-field
+    // initializer: object-typed static initializers are not reliably run ahead
+    // of first use in the current toolchain, so an eager `= heap FiberLocal<>()`
+    // leaves the field null and faults on first touch.
+    //
+    // Critically, the singleton is NEVER returned by value or bound to a local:
+    // `SCOPE` is an owned static field, so handing it out would alias ownership
+    // and the borrowing local would drop the singleton on scope exit (a
+    // use-after-free on the next request). Every accessor instead calls
+    // `ensure()` and then invokes methods on `RequestScope.SCOPE` directly —
+    // calling a method on a field neither moves nor drops it.
+    //
+    // (v1 limitation: the lazy init is not yet once-guarded against a
+    // first-touch race between fibers — tracked in plan/cazo-plan.md.)
+    static FiberLocal<ScopeMap> SCOPE;
+
+    static void ensure() {
+        if (RequestScope.SCOPE == null) {
+            // `#created` transfers ownership of the fresh FiberLocal into the
+            // static field. Without the marker the local's scope-exit drop
+            // frees the object we just installed, leaving SCOPE dangling — the
+            // same transfer ArrayList.add uses for `this.data = #grown`.
+            FiberLocal<ScopeMap> created = heap FiberLocal<ScopeMap>();
+            RequestScope.SCOPE = #created;
+        }
+    }
+
+    /**
+     * Run `body` with a fresh, empty request scope bound for its dynamic
+     * extent. The scope's ScopeMap — and every bean stored in it — is owned
+     * by the binding and drops when `body` returns OR throws, so request-
+     * scoped state can never outlive the request.
+     */
+    // COMPILER-BUG WORKAROUND (cajeta-two 0.7.1): dispatching a method on a
+    // FiberLocal held in a STATIC field — `RequestScope.SCOPE.isBound()` —
+    // passes a bad `this` and faults (null deref), even though the field reads
+    // back non-null. A method on a LOCAL works fine. So every accessor first
+    // reads `SCOPE` into a local (`FiberLocal<ScopeMap> fl = RequestScope.SCOPE`)
+    // and dispatches on the local. That read is a BORROW, not a move: the static
+    // stays valid and the local does not double-free on drop (verified). Do NOT
+    // collapse these back to direct `SCOPE.method()` calls until the codegen bug
+    // is fixed upstream.
+
+    public static void enter(() -> void body) {
+        RequestScope.ensure();
+        FiberLocal<ScopeMap> fl = RequestScope.SCOPE;
+        ScopeMap map = heap ScopeMap();
+        fl.where(#map, body);
+    }
+
+    /** Whether a request scope is currently active on this fiber. */
+    public static boolean isActive() {
+        RequestScope.ensure();
+        FiberLocal<ScopeMap> fl = RequestScope.SCOPE;
+        return fl.isBound();
+    }
+
+    /**
+     * The active request's ScopeMap. Throws when no request scope is in
+     * effect — call sites that may run outside a request should guard with
+     * `isActive()` first.
+     */
+    public static ScopeMap current() {
+        RequestScope.ensure();
+        FiberLocal<ScopeMap> fl = RequestScope.SCOPE;
+        return fl.get();
+    }
+
+    /**
+     * Whether a bean is bound for `typeName` in the active request scope.
+     * False (rather than throwing) when no scope is active, so callers can
+     * treat "no request" and "not yet created" uniformly.
+     */
+    public static boolean has(String typeName) {
+        RequestScope.ensure();
+        FiberLocal<ScopeMap> fl = RequestScope.SCOPE;
+        if (fl.isBound() == false) {
+            return false;
+        }
+        return fl.get().has(typeName);
+    }
+
+    /** The bean bound for `typeName` in the active request, or null. */
+    public static Object lookup(String typeName) {
+        RequestScope.ensure();
+        FiberLocal<ScopeMap> fl = RequestScope.SCOPE;
+        if (fl.isBound() == false) {
+            return null;
+        }
+        return fl.get().lookup(typeName);
+    }
+
+    /**
+     * Store `instance` under `typeName` in the active request scope, taking
+     * ownership for the request's lifetime. Throws when no scope is active.
+     */
+    public static void store(String typeName, #Object instance) {
+        RequestScope.ensure();
+        FiberLocal<ScopeMap> fl = RequestScope.SCOPE;
+        fl.get().store(typeName, #instance);
+    }
+}

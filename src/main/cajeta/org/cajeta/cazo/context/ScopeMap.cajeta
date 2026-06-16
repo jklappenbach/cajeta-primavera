@@ -1,0 +1,72 @@
+package org.cajeta.cazo.context;
+
+import cajeta.collection.ArrayList;
+
+/**
+ * A per-scope object store: a fully-qualified type name -> the single
+ * instance bound for that type within one request (or session).
+ *
+ * Ownership lives in the `instances` list — it is the sole owner of every
+ * scoped bean, so when the ScopeMap drops (at request/session end) the whole
+ * graph of scoped instances drops with it. The parallel `keys` list is a pure
+ * lookup index; a linear scan is the right data structure here because the
+ * number of distinct scoped beans per request is small (typically a handful),
+ * and avoiding a hash map keeps the store allocation-light on the hot path.
+ *
+ * This is the runtime backing for request- and session-scoped @Component
+ * beans (cazo's component lifecycle, documented in docs/Components.md).
+ */
+public class ScopeMap {
+    ArrayList<String> keys;
+    ArrayList<Object> instances;
+
+    public ScopeMap() {
+        this.keys = heap ArrayList<String>();
+        this.instances = heap ArrayList<Object>();
+    }
+
+    // Index of `key` in the parallel arrays, or -1 when absent. Byte-equality
+    // (String.equals) rather than identity: reflective type names are not
+    // guaranteed interned, so two equal names may be distinct String objects.
+    int32 indexOf(String key) {
+        int32 i = 0;
+        int32 n = this.keys.count();
+        while (i < n) {
+            String k = this.keys.get(i);
+            if (k.equals(key)) {
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    /** Whether an instance is already bound for `key`. */
+    public boolean has(String key) {
+        return this.indexOf(key) >= 0;
+    }
+
+    /** The instance bound for `key`, or null when none is bound. */
+    public Object lookup(String key) {
+        int32 i = this.indexOf(key);
+        if (i < 0) {
+            return null;
+        }
+        return this.instances.get(i);
+    }
+
+    /**
+     * Bind `value` for `key`, taking ownership for the scope's lifetime.
+     * Caller must check `has(key)` first for an idempotent get-or-create;
+     * this method always appends.
+     */
+    public void store(String key, #Object value) {
+        this.keys.add(key);
+        this.instances.add(value);
+    }
+
+    /** Number of scoped instances currently held. */
+    public int32 count() {
+        return this.keys.count();
+    }
+}

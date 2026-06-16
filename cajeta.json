@@ -1,0 +1,80 @@
+{
+    // cajeta-cazo — best-of-breed enterprise framework for Cajeta.
+    //
+    // cazo is to Cajeta roughly what Spring is to Java: an opinionated layer
+    // built ON the language's neutral primitives (@Inject, FiberLocal,
+    // reflection). The LANGUAGE ships mechanism; cazo ships POLICY — component
+    // lifecycle, request/session scope, web request/session models — so the
+    // core stays small and other frameworks remain free to innovate.
+    //
+    // This is a LIBRARY project: no `entry-method`, compiles to a reusable
+    // `.cja` archive. Consumers link only the parts they use (dead-code
+    // elimination), which matters for the embedded/robotics targets Cajeta
+    // is headed toward.
+
+    "details": {
+        "name":               "org.cajeta.cazo",
+        "version":            "0.1.0",
+        "description":        "cazo — enterprise framework for Cajeta (components, web, request/session scope)",
+        "license":            "Apache-2.0",
+        "authors":            ["Julian Klappenbach"],
+        "cajeta-lang-version": "1.0"
+    },
+
+    "settings": {
+        "capabilities": [],
+
+        // INTENDED dependencies (not yet wired — neither library is published
+        // to a resolvable registry, and the current scope sources link only
+        // core stdlib). Restore these once cajeta-logging / cajeta-unit are
+        // available to the resolver (registry publish or path-dependency):
+        //   "dependencies":     { "org.cajeta.logging": "0.1.*" }  // structured logs
+        //   "dev-dependencies": { "org.cajeta.unit":    "0.1.*" }  // test helpers
+        "dependencies": {},
+
+        "dev-dependencies": {},
+
+        "repositories": [
+            { "name": "central", "url": "https://repo.cajeta.org",
+              "priority": 0 }
+        ],
+
+        "build": {
+            "target": "host"
+        }
+    },
+
+    "tasks": {
+
+        "build": {
+            "description": "Compile sources to a .cja library archive",
+            "actions": [
+                { "action": "build", "flavor": "debug", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
+        "test": {
+            "description": "Build + run cazo's unit tests (fails on any failure)",
+            "actions": [
+                { "action": "build", "flavor": "debug",
+                  "entry-method": "org.cajeta.cazo.selftest.SelfTest.run",
+                  "id": "testbin" },
+                { "action": "test", "input": "${testbin.path}" }
+            ]
+        },
+
+        "release": {
+            "description": "Optimized release build of the library (.cja)",
+            "actions": [
+                { "action": "build", "flavor": "release", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
+        "clean": {
+            "description": "Wipe build outputs",
+            "actions": [ { "action": "clean" } ]
+        }
+    }
+}

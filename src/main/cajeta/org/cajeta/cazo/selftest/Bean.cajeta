@@ -1,0 +1,10 @@
+package org.cajeta.cazo.selftest;
+
+/** A trivial stored-bean fixture for the request-scope self-tests. */
+public class Bean {
+    public int32 value;
+
+    public Bean(int32 v) {
+        this.value = v;
+    }
+}
