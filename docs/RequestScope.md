@@ -47,13 +47,19 @@ Bean b = (Bean) RequestScope.lookup(key);
 
 ## Ownership & lifecycle
 
-`ScopeMap` is the **sole owner** of every bean stored in it (the owning
-container is an `ArrayList<Object>`; a parallel key list is the lookup index —
-a linear scan, which is the right structure for the handful of beans a typical
-request touches). The `ScopeMap` itself is owned by the `FiberLocal` binding
-created in `enter`, so when `enter`'s body returns or throws, the binding pops,
-the `ScopeMap` drops, and the entire graph of request-scoped beans drops with
-it. Request-scoped state cannot outlive the request.
+`ScopeMap` holds the beans in an `ArrayList<Object>`; a parallel key list is the
+lookup index — a linear scan, the right structure for the handful of beans a
+typical request touches. The `ScopeMap` itself is owned by the `FiberLocal`
+binding created in `enter`, so when `enter`'s body returns or throws, the
+binding pops and the `ScopeMap` is freed. The *scope* cannot outlive the
+request.
+
+> **KNOWN LIMITATION (v1): scoped beans leak.** `ArrayList<T>` does not drop its
+> elements (verified — cajeta collections are non-owning today), so the beans in
+> a `ScopeMap` are **not** freed at request end; their destructors do not run.
+> Harmless for a short-lived process, wrong for a long-running server. The fix is
+> a language-level owning-collection change (compiler-synthesized element drop),
+> tracked in `plan/cazo-plan.md`. Don't rely on bean teardown at scope end yet.
 
 ## Implementation notes & v1 limitations
 

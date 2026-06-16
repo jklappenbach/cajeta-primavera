@@ -28,7 +28,7 @@ import cajeta.concurrent.FiberLocal;
  * ```cajeta
  * RequestScope.enter(() -> {
  *     handler.handle(request);     // current() is live for the whole call tree
- * });                              // the bag — and every bean in it — drops here
+ * });                              // the bag is freed here (beans currently leak — see note)
  * ```
  */
 public class RequestScope {
@@ -65,9 +65,14 @@ public class RequestScope {
 
     /**
      * Run `body` with a fresh, empty request scope bound for its dynamic
-     * extent. The scope's ScopeMap — and every bean stored in it — is owned
-     * by the binding and drops when `body` returns OR throws, so request-
-     * scoped state can never outlive the request.
+     * extent. The scope's ScopeMap is owned by the binding and is freed when
+     * `body` returns OR throws, so the scope itself can never outlive the
+     * request.
+     *
+     * NOTE: the *beans* stored in the scope are currently leaked, not freed —
+     * `ArrayList` does not drop its elements (see ScopeMap's KNOWN LIMITATION).
+     * Bean destructors do not run at request end yet; fix is blocked on a
+     * language-level owning-collection change.
      */
     public static void enter(() -> void body) {
         RequestScope.ensure();

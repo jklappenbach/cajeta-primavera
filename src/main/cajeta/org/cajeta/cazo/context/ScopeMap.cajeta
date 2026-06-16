@@ -6,12 +6,18 @@ import cajeta.collection.ArrayList;
  * A per-scope object store: a fully-qualified type name -> the single
  * instance bound for that type within one request (or session).
  *
- * Ownership lives in the `instances` list — it is the sole owner of every
- * scoped bean, so when the ScopeMap drops (at request/session end) the whole
- * graph of scoped instances drops with it. The parallel `keys` list is a pure
- * lookup index; a linear scan is the right data structure here because the
+ * The `instances` list holds the scoped beans; the parallel `keys` list is a
+ * pure lookup index. A linear scan is the right data structure here because the
  * number of distinct scoped beans per request is small (typically a handful),
  * and avoiding a hash map keeps the store allocation-light on the hot path.
+ *
+ * KNOWN LIMITATION (v1): `ArrayList<T>` does NOT drop its elements when it
+ * drops (verified — cajeta collections are non-owning today; see the memory-
+ * model note in plan/cazo-plan.md). So scoped beans are currently **leaked** at
+ * request/session end rather than freed. This is harmless for short-lived
+ * processes but wrong for a long-running server, and is blocked on a language-
+ * level owning-collection fix (compiler-synthesized element drop). Do not rely
+ * on bean destructors running at scope end yet.
  *
  * This is the runtime backing for request- and session-scoped @Component
  * beans (cazo's component lifecycle, documented in docs/Components.md).

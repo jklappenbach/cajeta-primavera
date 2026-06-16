@@ -43,19 +43,27 @@ it is **not** a `FiberLocal` binding. Build:
   request extent, resolve id → store on access. The session map's lifetime is
   the store's, never the request binding's.
 
-> **BLOCKER (found 2026-06-16): the stdlib has no owning, removable collection.**
+> **BLOCKER (found 2026-06-16): cajeta collections are non-owning.**
 > A correct *evicting* session store needs to hold session bags it OWNS (so an
 > evicted/invalidated session — and its `ScopeMap` of beans — actually frees)
-> AND remove them on expiry/invalidate. Today: `ArrayList<T>` owns + drops its
-> elements but has **no `remove`/`clear`**; `HashMap<K,V>` has `remove` but holds
-> **borrowed** values (`vals[idx]=value`, no element drop), so eviction would
-> leak the bag graph. Neither supports own-and-remove. The request scope dodged
-> this (a request bag is dropped wholesale at request end, never element-removed).
-> **Prerequisite for Phase 2:** either (A) add an owning `removeAt(i)`/`remove`/
-> `clear` to `ArrayList` that drops the removed element (core-stdlib change,
-> careful element-move/drop semantics + tests), or (B) build a small owning,
-> removable map inside cazo. Until then a session store is either leaky
-> (no eviction) or unsafe — not shipped.
+> AND remove them on expiry/invalidate. Verified empirically (`--emit=exe`
+> drop-tracking):
+> - `ArrayList<T>` does **NOT drop its elements** when it drops — they LEAK.
+>   (The destructor mechanism works for plain locals; the list just never drives
+>   element drops.) It also has no `remove`/`clear`.
+> - Reassignment doesn't drop the overwritten value; there's no user-level
+>   explicit-drop keyword.
+> - `HashMap<K,V>` has `remove` but holds **borrowed** values
+>   (`vals[idx]=value`), so eviction would leak the bag graph.
+>
+> Consequence: even the request bag (`ScopeMap`) currently **leaks** its beans at
+> request end. A real owning collection needs **compiler-level** support: the
+> synthesized drop for a container must drop live elements `[0, sizeCount)` when
+> `T` is an owned reference type (the compiler knows T's ownership; user template
+> code can't branch on it, and `__cajeta_class_virtual_drop` would crash on a
+> primitive `T`). This is a **language memory-model decision** — escalated to the
+> language author. Tracked in project memory `collections-dont-own-elements`.
+> Phase 2 (and leak-free request scope) is blocked on it.
 
 ## Phase 3 — Component lifecycle integration
 
