@@ -69,28 +69,16 @@ public class RequestScope {
      * by the binding and drops when `body` returns OR throws, so request-
      * scoped state can never outlive the request.
      */
-    // COMPILER-BUG WORKAROUND (cajeta-two 0.7.1): dispatching a method on a
-    // FiberLocal held in a STATIC field — `RequestScope.SCOPE.isBound()` —
-    // passes a bad `this` and faults (null deref), even though the field reads
-    // back non-null. A method on a LOCAL works fine. So every accessor first
-    // reads `SCOPE` into a local (`FiberLocal<ScopeMap> fl = RequestScope.SCOPE`)
-    // and dispatches on the local. That read is a BORROW, not a move: the static
-    // stays valid and the local does not double-free on drop (verified). Do NOT
-    // collapse these back to direct `SCOPE.method()` calls until the codegen bug
-    // is fixed upstream.
-
     public static void enter(() -> void body) {
         RequestScope.ensure();
-        FiberLocal<ScopeMap> fl = RequestScope.SCOPE;
         ScopeMap map = heap ScopeMap();
-        fl.where(#map, body);
+        RequestScope.SCOPE.where(#map, body);
     }
 
     /** Whether a request scope is currently active on this fiber. */
     public static boolean isActive() {
         RequestScope.ensure();
-        FiberLocal<ScopeMap> fl = RequestScope.SCOPE;
-        return fl.isBound();
+        return RequestScope.SCOPE.isBound();
     }
 
     /**
@@ -100,8 +88,7 @@ public class RequestScope {
      */
     public static ScopeMap current() {
         RequestScope.ensure();
-        FiberLocal<ScopeMap> fl = RequestScope.SCOPE;
-        return fl.get();
+        return RequestScope.SCOPE.get();
     }
 
     /**
@@ -111,21 +98,19 @@ public class RequestScope {
      */
     public static boolean has(String typeName) {
         RequestScope.ensure();
-        FiberLocal<ScopeMap> fl = RequestScope.SCOPE;
-        if (fl.isBound() == false) {
+        if (RequestScope.SCOPE.isBound() == false) {
             return false;
         }
-        return fl.get().has(typeName);
+        return RequestScope.SCOPE.get().has(typeName);
     }
 
     /** The bean bound for `typeName` in the active request, or null. */
     public static Object lookup(String typeName) {
         RequestScope.ensure();
-        FiberLocal<ScopeMap> fl = RequestScope.SCOPE;
-        if (fl.isBound() == false) {
+        if (RequestScope.SCOPE.isBound() == false) {
             return null;
         }
-        return fl.get().lookup(typeName);
+        return RequestScope.SCOPE.get().lookup(typeName);
     }
 
     /**
@@ -134,7 +119,6 @@ public class RequestScope {
      */
     public static void store(String typeName, #Object instance) {
         RequestScope.ensure();
-        FiberLocal<ScopeMap> fl = RequestScope.SCOPE;
-        fl.get().store(typeName, #instance);
+        RequestScope.SCOPE.get().store(typeName, #instance);
     }
 }

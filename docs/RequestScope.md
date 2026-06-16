@@ -58,11 +58,13 @@ it. Request-scoped state cannot outlive the request.
 ## Implementation notes & v1 limitations
 
 - **Lazy key init.** The process-wide `FiberLocal` key is created lazily
-  through `ensure()` rather than a static-field initializer, and is never
-  returned by value or dispatched on directly — see the `COMPILER-BUG
-  WORKAROUND` comment in `RequestScope.cajeta` (a current toolchain codegen bug
-  faults on a method call against an object in a static field; reading it into a
-  local first is the safe form). To be removed when the compiler is fixed.
+  through `ensure()` rather than a static-field initializer (object-typed static
+  initializers aren't reliably run before first use in the current toolchain).
+  The owned static `SCOPE` is never returned by value or bound to a local —
+  doing so aliases ownership and the borrowing local would drop the singleton on
+  scope exit; accessors dispatch methods on `RequestScope.SCOPE` directly. (An
+  earlier codegen bug made *direct* static-field method dispatch fault; that is
+  fixed upstream in cajeta-two, so the read-into-a-local workaround was removed.)
 - **First-touch race.** The lazy init is not yet once-guarded against two fibers
   initializing the key simultaneously. Single-threaded use is unaffected; the
   guard is tracked in `plan/cazo-plan.md`.
