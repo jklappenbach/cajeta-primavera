@@ -37,11 +37,25 @@ it is **not** a `FiberLocal` binding. Build:
 - `SessionStore` — owning, id-keyed store of session `ScopeMap`s; create / get /
   invalidate; **expiry** (idle + absolute TTL); **concurrency-safe** access
   (the store is shared across all in-flight requests — guard with the stdlib
-  lock primitive).
+  `Lock` / `LockGuard`; timestamps from `Clock.millisTime()`).
 - `SessionScope` — ambient access to the *current* session for a request:
   bind the session **id** (cheap, owned `String`) via `FiberLocal` for the
   request extent, resolve id → store on access. The session map's lifetime is
   the store's, never the request binding's.
+
+> **BLOCKER (found 2026-06-16): the stdlib has no owning, removable collection.**
+> A correct *evicting* session store needs to hold session bags it OWNS (so an
+> evicted/invalidated session — and its `ScopeMap` of beans — actually frees)
+> AND remove them on expiry/invalidate. Today: `ArrayList<T>` owns + drops its
+> elements but has **no `remove`/`clear`**; `HashMap<K,V>` has `remove` but holds
+> **borrowed** values (`vals[idx]=value`, no element drop), so eviction would
+> leak the bag graph. Neither supports own-and-remove. The request scope dodged
+> this (a request bag is dropped wholesale at request end, never element-removed).
+> **Prerequisite for Phase 2:** either (A) add an owning `removeAt(i)`/`remove`/
+> `clear` to `ArrayList` that drops the removed element (core-stdlib change,
+> careful element-move/drop semantics + tests), or (B) build a small owning,
+> removable map inside cazo. Until then a session store is either leaky
+> (no eviction) or unsafe — not shipped.
 
 ## Phase 3 — Component lifecycle integration
 
