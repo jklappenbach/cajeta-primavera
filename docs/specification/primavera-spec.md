@@ -275,18 +275,29 @@ Flow-like, no coloring; backpressure via bounded channels) and structured
 concurrency. Endpoint streaming (§6), messaging (Tier-2), and SSE are all the same
 `Stream<T>`. See `cajeta.io`'s `Io.md` for the substrate.
 
-## 11. Data & transactions — **per spec**
+## 11. Data & transactions — **per spec** (multi-store)
 
-- **`@Repository`** — compile-time **generated** repositories (Micronaut Data
-  model; no runtime proxies). Derived query methods (`findById`, `findByEmail`),
-  explicit `@Query` for the rest.
-- **`@Transactional`** — aspect-driven boundary; the transaction context rides
-  `FiberLocal` (a natural fit — no thread-local hazard under the event-driven
-  executor). Propagation (`REQUIRED`/`REQUIRES_NEW`); rollback rules.
-- **Connection pooling** — an owned, deterministically-dropped pool (borrow-checker
-  fit).
-- **Migrations / NoSQL / cache stores** — seams; ship one default each (§16).
-- **Heavyweight ORM is ceded** (§15) — favor explicit, lightweight SQL mapping.
+**Full spec: [`Data.md`](../Data.md).** SQL, DynamoDB, and Redis are **first-class
+peers** — one neutral, role-named annotation union (`@Entity`/`@Id(PARTITION|SORT)`/
+`@Field`/`@Index`/`@Ttl`/`@Version`/`@Query`) over per-store dialects, not an SQL
+ORM with NoSQL bolted on.
+
+- **`@Repository`** — compile-time **generated** repositories (no runtime proxies),
+  three query tiers: derived methods (compile-time-parsed against fields/keys), a
+  store-native `@Query`, and a typed builder for dynamic queries. The available
+  surface is store-appropriate and compile-time-enforced (e.g. Dynamo rejects an
+  accidental `Scan`).
+- **Plain owned entities, stateless repositories.** **Managed ORM is precluded by
+  the memory model**, not merely "ceded": persistence context / identity map / lazy
+  loading / dirty tracking are GC-shaped managed-reference graphs that single
+  ownership forbids. Entities are owned values; you fetch (you own), mutate, `save`.
+- **`@Transactional`** — aspect-driven; the tx context rides `FiberLocal` (no
+  thread-local hazard under the event-driven executor). **Semantics are honestly
+  per-store** (SQL ACID; Dynamo TransactWrite/conditional + eventual-vs-strong;
+  Redis MULTI/EXEC) — no fake-uniform ACID.
+- **Connection pooling** — owned, deterministically-dropped (borrow-checker fit).
+- **Module shape** — `primavera-data` core + adapters `primavera-data-{sql,dynamo,redis}`;
+  migrations and cache stores are seams.
 
 ## 12. Observability — **per spec**
 
@@ -313,21 +324,27 @@ running a handler under either executor. Built on
 
 ## 15. Deliberately ceded (not primavera's lane)
 
-Heavyweight ORM (Hibernate-style); server-side MVC/templating (API-first);
+**Managed ORM** (persistence context / lazy loading / dirty tracking) — *precluded
+by the single-ownership memory model*, not a free choice (§11, `Data.md`); primavera
+does lightweight generated data mapping instead. Also: server-side MVC/templating (API-first);
 enterprise-integration DSLs (Camel/Spring Integration); crypto primitives (→
 stdlib); concrete cloud/mail/SMS SDKs (primavera ships the *seam*, ecosystem ships
 adapters). Rationale: [`EnterpriseFrameworkLandscape.md`](EnterpriseFrameworkLandscape.md) § ceded.
 
 ## 16. Open decisions
 
-1. **Module granularity** — multi-repo `primavera-*` vs one DCE-gated library (§2).
-2. **Async surface** — fibers-only, no reactive-streams adapter? Leaning yes.
-3. **Data depth** — how far past "generated repositories + SQL mapping" before it
-   becomes the ORM we ceded.
-4. **Seam defaults** — which one adapter ships in-tree per seam (Redis for cache,
+**Decided (2026-06):**
+- ✅ **Module granularity** — **multi-repo `primavera-*` modules** (§2).
+- ✅ **Async surface** — **fibers-only, no reactive-streams adapter** (§10).
+- ✅ **Data depth** — **multi-store generated repos + typed access** (SQL/Dynamo/Redis
+  dialects); managed ORM is precluded by the model, not a depth knob (§11, `Data.md`).
+
+**Still open:**
+1. **Seam defaults** — which one adapter ships in-tree per seam (Redis for cache,
    env for secrets, …) so each capability is usable out of the box.
-5. **`@Inject(allocate=…)` → `@Inject(scope=…)`** naming, and whether to allow a
+2. **`@Inject(allocate=…)` → `@Inject(scope=…)`** naming, and whether to allow a
    component-level **default scope** that sites may override (legibility vs
    site-flexibility).
-6. **`@Primary`** — keep the implicit "unqualified component is the default", or add
+3. **`@Primary`** — keep the implicit "unqualified component is the default", or add
    an explicit `@Primary`? And **multibinding** (`@Inject List<A>`) for plugin sets.
+4. **Data adapter lifecycle** & single-table depth & `@Scan` ergonomics — see `Data.md`.

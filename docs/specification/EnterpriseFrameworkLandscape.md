@@ -129,16 +129,20 @@ Coverage marks in the matrices: ● first-class · ◐ partial / via module · �
 
 ### G. Data access + transactions
 
+> **Multi-store, NoSQL-first-class.** Full design: [`Data.md`](../Data.md). SQL,
+> DynamoDB, and Redis are peers under one neutral role-named annotation union +
+> per-store dialects.
+
 | Capability | Spring | Micronaut | Quarkus | ASP.NET | Go | primavera stance |
 |---|:--:|:--:|:--:|:--:|:--:|---|
-| Repository abstraction | ● | ● | ● | ● | ◐ | **TAKE — Tier 1.** Compile-time generated repositories (Micronaut Data model — no runtime proxies). `@Repository` stereotype already reserved. |
-| ORM (full, Hibernate-style) | ● | ◐ | ● | ● | ○ | **CEDE the heavyweight ORM.** Favor explicit, lightweight SQL mapping (jOOQ/sqlc spirit) — fits no-GC + predictable cost. |
-| Query / SQL builder | ◐ | ● | ◐ | ● | ◐ | **TAKE — Tier 2.** Type-checked query building. |
-| Transactions (`@Transactional`) | ● | ● | ● | ● | ◐ | **TAKE — Tier 1.** Aspect-driven; `FiberLocal` carries the tx context — a natural fit. |
+| Repository abstraction (multi-store) | ● | ● | ● | ● | ◐ | **TAKE — Tier 1.** Compile-time generated repos, no proxies; one `@Entity`/`@Repository` vocabulary over SQL/Dynamo/Redis dialects (`Data.md`). |
+| Managed ORM (Hibernate-style) | ● | ◐ | ● | ● | ○ | **PRECLUDED by the memory model** (not a free choice): persistence context / lazy / dirty-tracking are managed-reference graphs single-ownership forbids. Plain owned entities + stateless repos instead. |
+| Query (derived + native + typed builder) | ◐ | ● | ◐ | ● | ◐ | **TAKE — Tier 1/2.** Derived methods compile-parsed; `@Query` store-native; typed builder for dynamic. |
+| Transactions (`@Transactional`) | ● | ● | ● | ● | ◐ | **TAKE — Tier 1.** Aspect-driven; `FiberLocal` carries the tx context. **Honestly per-store** (ACID / TransactWrite / MULTI-EXEC), not fake-uniform. |
 | Distributed tx / XA / sagas | ● | ◐ | ◐ | ◐ | ○ | **DEFER — Tier 3.** Sagas over messaging if/when. |
-| Connection pooling | ● | ● | ● | ● | ◐ | **TAKE — Tier 1.** Owned, deterministically-dropped pool — borrow-checker fit. |
-| Migrations (Flyway/Liquibase) | ● | ● | ● | ● | ◐ | **SEAM — Tier 2.** |
-| NoSQL / cache stores (Redis, Mongo) | ● | ● | ● | ● | ◐ | **SEAM — Tier 2.** Client seams; ship Redis. |
+| Connection/client pooling | ● | ● | ● | ● | ◐ | **TAKE — Tier 1.** Owned, deterministically-dropped — borrow-checker fit. |
+| Migrations | ● | ● | ● | ● | ◐ | **SEAM — Tier 2.** |
+| NoSQL key-value/document (Dynamo, Redis) | ● | ● | ● | ● | ◐ | **TAKE — Tier 1, first-class.** Dynamo + Redis dialects (not a generic "seam"); compile-time scan guardrail. |
 
 ### H. Observability + operations
 

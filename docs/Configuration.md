@@ -68,9 +68,11 @@ Resolved config is a merge of layered sources, **highest precedence first**:
 4. **Base file** — `application.toml`.
 5. **Type defaults** — field initializers in `@Config` types / `@Value(default=)`.
 
-A higher layer overrides a lower one *key by key* (not whole-file). The canonical
-format is **TOML** (typed, comment-friendly); additional formats and remote sources
-plug in via the `ConfigSource` seam (§9).
+A higher layer overrides a lower one *key by key* (not whole-file). **TOML and YAML
+are both built-in** file formats (TOML for typed/comment-friendly config, YAML for
+the k8s/ML familiarity); additional formats and remote sources plug in via the
+`ConfigSource` seam (§9). Profile files follow the chosen format
+(`application-<profile>.toml` / `.yaml`).
 
 **Name mapping (relaxed binding).** Canonical keys are dot-path **kebab-case**
 (`db.pool-size`); fields are camelCase (`poolSize`); the binder maps between them.
@@ -273,15 +275,14 @@ no-reflection mechanism, which neither the JVM frameworks nor Hydra do.
 // cajeta run -- --train.lr=3e-4 --model=vit_b16   →  typed, validated, dumped for the run log.
 ```
 
-## 13. Open questions
+## 13. Decisions (resolved 2026-06)
 
-- **Format** — TOML primary (typed, clean). Also accept YAML, or hold the line on
-  TOML + the `ConfigSource` seam for the rest? Lean: TOML-only built-in.
-- **Strict-unknown-key default** — reject unknown keys under a `@Config` by default
-  (catches typos) or warn? Lean: warn by default, `@Config(strict=true)` to reject.
-- **Frozen-mode partial** — allow *some* keys frozen and others runtime in one build,
-  or all-or-nothing? Lean: all-or-nothing per build for simplicity.
-- **Reload granularity** — per-`@Config`-type swap (specified) vs finer field-level
-  reactivity. Lean: type-level snapshot swap.
-- **Compile-time key validation strength** — warning vs hard error for an undeclared
-  `@Value` key. Lean: error in frozen mode, warning in runtime mode.
+- ✅ **Format** — **TOML *and* YAML built-in** (TOML typed/clean; YAML for k8s/ML
+  familiarity); other formats via the `ConfigSource` seam.
+- ✅ **Unknown keys** — **warn by default**; `@Config(strict=true)` to reject.
+- ✅ **Frozen mode** — **all-or-nothing per build** (a build is fully frozen or fully
+  runtime; cleanest DCE story).
+- ✅ **Reload granularity** — **type-level snapshot swap** (a whole new immutable
+  `@Config`, swapped atomically); no field-level reactivity.
+- ✅ **Key-validation strength** — **error in frozen mode, warning in runtime mode**
+  (mode-appropriate strictness).
