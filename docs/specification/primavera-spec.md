@@ -118,7 +118,29 @@ concurrency-safe store:
 > (stdlib `owning-collections` plan). Session scope is blocked on it — the API is
 > specified, the implementation waits.
 
-### 3.5 Deployment profiles — **per spec**
+### 3.5 Connection & principal scopes + presence — **per spec**
+
+**Full spec: [`Connections.md`](../Connections.md).** Between request and session sits
+the missing **connection** scope, plus a **registry** that makes a live connection
+*addressable*. The full hierarchy: `Message ⊂ Connection ⊂ Session ⊂ Principal ⊂
+Application` (`@MessageScoped`/`@ConnectionScoped`/`@SessionScoped`/`@PrincipalScoped`/
+`@Singleton`).
+
+- A live connection is an **addressable actor** (fiber + inbox + owned state + stable
+  id), a DI scope and a `ConnectionRegistry` entry at once.
+- **Address by topology** — `conns.to(Principal(id)|Topic(t)|predicate|Multicast(g)).send(…)`;
+  **presence is a query** (`conns.presence(Topic(t))`), unifying presence/pub-sub/routing.
+- **Ownership-sound** — the registry holds borrowed handles; connection drop
+  auto-deregisters (no stale entries — correct presence by construction).
+- **Protocol-appropriate** — a per-protocol capability matrix (stateful/addressable/
+  pushable/duplex); unsupported ops are compile errors; UDP gets a synthesized *flow*
+  scope. Backpressure/overflow policy on delivery; declarative state migration on
+  disconnect.
+- **Scales unchanged** to a fleet via [`cajeta-cluster`](https://github.com/jklappenbach/cajeta-cluster)
+  (gossip-built ring + partitioned registry); same `conns.to(...)` API, one node or a
+  planet.
+
+### 3.6 Deployment profiles — **per spec**
 
 `@Profile("prod"|"test"|"ci"|…)` on a component includes it only when the active
 `--profile` matches; profile-neutral components always apply. One active profile per

@@ -77,6 +77,7 @@ cajeta test     # build + run the runtime self-tests (fails the build on any fai
 - [`docs/RequestScope.md`](docs/RequestScope.md) — request scope: model, ownership, concurrency.
 - [`docs/Configuration.md`](docs/Configuration.md) — config & value injection (`@Value`/`@Config`): sources, AoT binders, frozen-mode, secrets, ML experiment config.
 - [`docs/Data.md`](docs/Data.md) — multi-store data access (SQL/DynamoDB/Redis): the neutral annotation union, generated repositories, per-store dialects.
+- [`docs/Connections.md`](docs/Connections.md) — connections, presence & addressing: the scope hierarchy, connection-as-actor, `ConnectionRegistry`, protocol capability matrix (scales via cajeta-cluster).
 - [`docs/AspectModel.md`](docs/AspectModel.md) — pointer: the component model + AOP substrate is **core stdlib**; primavera adds the policy layer on top.
 - [`docs/Factory.md`](docs/Factory.md) — `@Factory` design rationale (normative spec is the stdlib): third-party types, assisted args, init-beyond-ctor.
 - [`docs/Testing.md`](docs/Testing.md) — how DI overrides work under test: the four override layers + scope seeding.
