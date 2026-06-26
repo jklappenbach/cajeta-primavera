@@ -73,6 +73,7 @@ cajeta test     # build + run the runtime self-tests (fails the build on any fai
 
 ## Documentation
 
+- [`docs/specification/primavera-spec.md`](docs/specification/primavera-spec.md) — **the canonical framework specification** (scopes, config, web/endpoints, resilience, security, data, observability, …).
 - [`docs/RequestScope.md`](docs/RequestScope.md) — request scope: model, ownership, concurrency.
 - [`docs/AspectModel.md`](docs/AspectModel.md) — pointer: the component model + AOP substrate is **core stdlib**; primavera adds the policy layer on top.
 - [`docs/Factory.md`](docs/Factory.md) — `@Factory` design rationale (normative spec is the stdlib): third-party types, assisted args, init-beyond-ctor.
