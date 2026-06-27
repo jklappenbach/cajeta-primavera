@@ -1,6 +1,6 @@
-package org.cajeta.primavera.selftest;
+package dev.cajeta.primavera.selftest;
 
-import org.cajeta.primavera.context.RequestScope;
+import dev.cajeta.primavera.context.RequestScope;
 
 /**
  * primavera's runtime self-test — proves the request scope behaves across the
@@ -12,7 +12,7 @@ import org.cajeta.primavera.context.RequestScope;
  * captured local, so the closure passed to `RequestScope.enter` mutates static
  * state directly (no local capture).
  *
- * Entry: `org.cajeta.primavera.selftest.SelfTest.run` (returns 0 = all green).
+ * Entry: `dev.cajeta.primavera.selftest.SelfTest.run` (returns 0 = all green).
  */
 public class SelfTest {
     static int32 failures;
@@ -28,7 +28,7 @@ public class SelfTest {
         SelfTest.failures = 0;
         System.stdout.println("== primavera self-tests (request scope over FiberLocal) ==");
 
-        String key = "org.cajeta.primavera.selftest.Bean";
+        String key = "dev.cajeta.primavera.selftest.Bean";
 
         // Outside any request, no scope is active and lookups are inert.
         SelfTest.check(RequestScope.isActive() == false, "no scope active before enter");

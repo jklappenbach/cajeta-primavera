@@ -46,7 +46,7 @@ serves both webserver concurrency models:
   thread hops and never leaks across requests.
 
 ```cajeta
-import org.cajeta.primavera.context.RequestScope;
+import dev.cajeta.primavera.context.RequestScope;
 
 RequestScope.enter(() -> {
     // current() is live for the whole call tree — no parameter threading.
@@ -67,7 +67,7 @@ Requires the Cajeta toolchain on `PATH` (or invoke the versioned binary
 directly):
 
 ```
-cajeta build    # compile to build/archive/org.cajeta.primavera-<version>.cja
+cajeta build    # compile to build/archive/dev.cajeta.primavera-<version>.cja
 cajeta test     # build + run the runtime self-tests (fails the build on any failure)
 ```
 

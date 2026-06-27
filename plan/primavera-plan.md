@@ -31,8 +31,8 @@ indivisible. Tracked on the cajeta-two side.)
 
 ## Phase 1 — Request scope ✅ (shipped v0.1.0)
 
-- `org.cajeta.primavera.context.ScopeMap` — owning, name-keyed per-scope bean store.
-- `org.cajeta.primavera.context.RequestScope` — request scope over `FiberLocal`,
+- `dev.cajeta.primavera.context.ScopeMap` — owning, name-keyed per-scope bean store.
+- `dev.cajeta.primavera.context.RequestScope` — request scope over `FiberLocal`,
   correct under both fiber-per-request and completion-port executors.
 - Runtime self-test (`selftest/SelfTest`) — enter / store / lookup / teardown.
 
@@ -120,7 +120,7 @@ primavera's internals:
   the cajeta-two codegen bug is fixed (see project memory
   `static-field-method-receiver-segv`).
 - **Once-guard** the lazy `FiberLocal` key init against a first-touch race.
-- **Wire the real dependencies** (`org.cajeta.logging` runtime, `org.cajeta.unit`
+- **Wire the real dependencies** (`dev.cajeta.logging` runtime, `dev.cajeta.unit`
   dev) in `cajeta.json` once they are resolvable (registry publish or
   path-dependency); primavera's web/component layer logs through cajeta-logging.
 

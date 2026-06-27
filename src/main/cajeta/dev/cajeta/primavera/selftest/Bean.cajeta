@@ -1,4 +1,4 @@
-package org.cajeta.primavera.selftest;
+package dev.cajeta.primavera.selftest;
 
 /** A trivial stored-bean fixture for the request-scope self-tests. */
 public class Bean {

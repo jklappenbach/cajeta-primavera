@@ -120,7 +120,7 @@ runtime override hook (stdlib `docs/DI-override-hook.md`):
 - **Keyed on the type's `reflect.Class` pointer identity** (the same global `T.class`
   lowers to) — no string compare. The compiler emits a `select` at each overridable
   `@Inject` site: `ovr = __cajeta_inject_override_get(&T#ClassObject); dep = ovr ?? dep`.
-- **Driven from cajeta-unit** via `org.cajeta.unit.TestContext`:
+- **Driven from cajeta-unit** via `dev.cajeta.unit.TestContext`:
 
 ```cajeta
 TestContext.bind(Database.class, fakeDb);    // any @Inject Database now resolves to fakeDb

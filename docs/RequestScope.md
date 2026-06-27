@@ -24,7 +24,7 @@ primitive, not hard-wired to threads: the primitive already solved propagation.
 
 ## API
 
-`org.cajeta.primavera.context.RequestScope` (all static):
+`dev.cajeta.primavera.context.RequestScope` (all static):
 
 | Method | Effect |
 |---|---|
