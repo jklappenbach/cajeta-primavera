@@ -36,15 +36,15 @@
 
         "capabilities": [],
 
-        // INTENDED dependencies (not yet wired — neither library is published
-        // to a resolvable registry, and the current scope sources link only
-        // core stdlib). Restore these once cajeta-logging / cajeta-unit are
-        // available to the resolver (registry publish or path-dependency):
-        //   "dependencies":     { "dev.cajeta.logging": "0.1.*" }  // structured logs
-        //   "dev-dependencies": { "dev.cajeta.unit":    "0.1.*" }  // test helpers
-        "dependencies": {},
+        // Resolved from the local Olla repository (~/.olla; `cajeta install`
+        // from the sibling checkouts) until the olla.cajeta.dev publishes land.
+        "dependencies": {
+            "dev.cajeta.logging": "0.5.*"
+        },
 
-        "dev-dependencies": {},
+        "dev-dependencies": {
+            "dev.cajeta.unit": "0.1.*"
+        },
 
         "repositories": [
             { "name": "olla", "url": "https://olla.cajeta.dev",

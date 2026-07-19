@@ -151,9 +151,11 @@ primavera's internals:
   park/yield point — but wrong under multi-carrier parallelism. Wants a
   language-level static-init or once primitive rather than a hand-rolled
   guard, whose own lock static has the same bootstrap race.)
-- **Wire the real dependencies** (`dev.cajeta.logging` runtime, `dev.cajeta.unit`
-  dev) in `cajeta.json` once they are resolvable (registry publish or
-  path-dependency); primavera's web/component layer logs through cajeta-logging.
+- ✅ **Dependencies wired** (2026-07-19): `dev.cajeta.logging 0.5.*` (runtime)
+  and `dev.cajeta.unit 0.1.*` (dev) resolve from the local Olla repository
+  (`cajeta install` from the sibling checkouts) until the olla.cajeta.dev
+  publishes land. Phase 5 is no longer dependency-blocked. Still to do:
+  actually log through cajeta-logging in the web/component layer.
 
 ## Dependency on cajeta-two work
 
