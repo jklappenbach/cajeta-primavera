@@ -1,0 +1,33 @@
+package dev.cajeta.primavera.test;
+
+/**
+ * Destructor-counting probe bean for scope-lifecycle tests: store one in a
+ * request or session scope and assert `drops` afterward to prove the scope
+ * actually freed its beans (leak tests) — or that it did NOT free them early
+ * (premature-drop tests). Reset the counter at the start of each test.
+ *
+ * ```cajeta
+ * TrackedBean.resetDrops();
+ * PrimaveraTest.request(() -> {
+ *     RequestScope.store(key, #(heap TrackedBean(1)));
+ * });
+ * Assert.that(TrackedBean.drops).isEqualTo(1);   // scope end dropped the bean
+ * ```
+ */
+public class TrackedBean {
+    public static int32 drops;
+
+    public int32 tag;
+
+    public TrackedBean(int32 tag) {
+        this.tag = tag;
+    }
+
+    public ~TrackedBean() {
+        TrackedBean.drops = TrackedBean.drops + 1;
+    }
+
+    public static void resetDrops() {
+        TrackedBean.drops = 0;
+    }
+}

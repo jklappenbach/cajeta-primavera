@@ -175,4 +175,37 @@ public class SessionStore {
         LockGuard g = this.gate.acquire();
         return (int32) this.sessions.count();
     }
+
+    /**
+     * Drop every session — each bag and its beans free immediately. The
+     * "log everyone out" operation (deploy flush, credential rotation);
+     * also what test harnesses call between tests for isolation. Returns
+     * the number dropped.
+     */
+    public int32 invalidateAll() {
+        LockGuard g = this.gate.acquire();
+        // Same two-pass shape as evictExpiredAt: copy the ids out first —
+        // streaming the map while removing is undefined.
+        ArrayList<String> ids = heap ArrayList<String>();
+        Stream<String> ks #= this.sessions.keys();
+        boolean scanning = true;
+        while (scanning) {
+            Optional<String> o = ks.next();
+            if (o.isPresent()) {
+                String id = o.get();
+                String copy #= id.substring(0, id.byteLength());
+                ids.add(#copy);
+            } else {
+                scanning = false;
+            }
+        }
+        int32 i = 0;
+        int32 n = ids.count();
+        while (i < n) {
+            String id = ids.get(i);
+            this.sessions.remove(id);
+            i = i + 1;
+        }
+        return n;
+    }
 }

@@ -124,21 +124,53 @@ the *policy* primavera layers on top:
   propagation is correct under both (Phase 1's `FiberLocal` carries across the
   handoff; the boundary wires it in).
 
-## Phase 5 — primavera-side unit-test helpers (on cajeta-unit)
+## Phase 5 — primavera-side unit-test helpers (on cajeta-unit) ✅ (shipped 2026-07-19)
 
 The test capability for primavera's features lives **in primavera**, built on the neutral
 [cajeta-unit](https://github.com/jklappenbach/cajeta-unit) framework but knowing
-primavera's internals:
+primavera's internals. Shipped as `dev.cajeta.primavera.test`:
 
-- mock `@Request` / `@Session`-scoped beans; seed request/session context.
-- run a handler under a **chosen executor** (thread-per-request vs
-  completion-port) so a test can assert behaviour under each.
-- assert request/session **isolation** (no cross-request leakage) and that scope
-  **follows the request across a handoff** — the bug a thread-per-request-only
-  unit test can't see. A harness that simulates the thread-hopping
-  completion-port path is what catches "someone used thread-local and it leaks
-  under load."
-- override the `@Inject` DI context with mocks/fakes for testing.
+- **`PrimaveraTest`** (facade, all static; deliberately free of cajeta-unit
+  imports so it ships in the library):
+  - `request(body)` / `freshSession(id, body)` / `resumeSession(id, body)` —
+    scope harnesses; fresh-vs-resume makes cross-request persistence explicit.
+  - `reset()` — blank-slate session state between tests (invalidateAll + TTLs
+    off); backed by the new core `SessionStore.invalidateAll()` ("log
+    everyone out", a production op, not a test backdoor).
+  - `requestAcrossHandoff(pre, continuation)` — simulates the
+    completion-port executor's **unstructured handoff**: `pre` seeds the
+    scope on the originating fiber; a worker fiber spawned with NO bindings
+    installs a `FiberContext` snapshot and runs `continuation` under it.
+    The originating extent is held open by rendezvous (Layer-3 lifetime
+    contract: a snapshot does NOT keep the bag alive past its extent).
+- **`TrackedBean`** — destructor-counting probe for leak / premature-drop
+  assertions.
+- **Mocking scoped beans** needs no machinery: seed the scope with the mock
+  under the real key; `materialize`'s has() check short-circuits the real
+  factory. `@Inject` overrides are cajeta-unit `TestContext`'s job
+  (`--profile=test`).
+- The selftest now runs on cajeta-unit's `TestRunner` (14 tests) and covers
+  scope-follows-the-request across the handoff, no-leak to unrelated fibers,
+  and structured-inherit on spawn.
+
+Compiler/runtime findings hit while building this (upstream, cajeta-two):
+1. **dev-dependencies are never resolved** — only `dependencies` reach
+   `--classpath` (`parseDependencies` reads one key); dev.cajeta.unit sits in
+   `dependencies` until that lands (see cajeta.json note).
+2. **No separate test source root** — the selftest compiles as part of
+   src/main, which also forces (1).
+3. **`spawn` rejects qualified calls** — `spawn Class.method(...)` errors
+   (CAJETA_ERROR_ASYNC_R3A); only bare same-class static calls work.
+4. **Captured function params can't be bare-called in nested lambdas**
+   (member resolution) — worked around with the FilterStream field-invoke
+   pattern (`HandoffRun`).
+5. **Method locals captured through two lambda levels fail to lower**
+   (CAJETA_ERROR_ARG_INVALID "non-addressable property") — worked around
+   with static accessors / inline literals.
+6. **Transferring a `FiberContext` through `Channel`/`Optional` slots
+   SIGSEGVs in the receiving fiber** (double claim of the snapshot's
+   ownership) — worked around by holding the snapshot in an owned static and
+   signaling rendezvous over `Channel<int32>`.
 
 ## Cross-cutting cleanups
 

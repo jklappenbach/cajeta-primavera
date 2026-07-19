@@ -1,0 +1,33 @@
+package dev.cajeta.primavera.test;
+
+import cajeta.concurrent.Channel;
+import cajeta.concurrent.FiberContext;
+
+/**
+ * Producer side of PrimaveraTest.requestAcrossHandoff, as an object so the
+ * `pre` closure is an invocable FIELD (a captured function param cannot be
+ * bare-called from inside a nested lambda). `insideScope` runs within the
+ * harness's request extent: it does the "pre-I/O" work, snapshots the fiber
+ * context, hands it to the worker, and parks until the worker is done — the
+ * rendezvous that keeps the request extent (and so the bag) open while the
+ * continuation runs.
+ */
+class HandoffRun {
+    () -> void pre;
+    Channel<int32> ready;
+    Channel<int32> done;
+
+    HandoffRun(() -> void pre, Channel<int32> ready, Channel<int32> done) {
+        this.pre = pre;
+        this.ready = ready;
+        this.done = done;
+    }
+
+    void insideScope() {
+        this.pre();
+        FiberContext snap #= FiberContext.capture();
+        PrimaveraTest.captured = #snap;
+        this.ready.send(1);
+        this.done.receive();
+    }
+}

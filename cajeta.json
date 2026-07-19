@@ -38,13 +38,19 @@
 
         // Resolved from the local Olla repository (~/.olla; `cajeta install`
         // from the sibling checkouts) until the olla.cajeta.dev publishes land.
+        //
+        // dev.cajeta.unit BELONGS in dev-dependencies, but sits in
+        // `dependencies` for two reasons (both cajeta-two gaps, tracked in
+        // plan/primavera-plan.md): the resolver only puts `dependencies` on
+        // the --classpath (dev-dependencies are parsed nowhere), and the
+        // selftest that imports it compiles as part of src/main (no separate
+        // test source root yet). Move it back when either lands.
         "dependencies": {
-            "dev.cajeta.logging": "0.5.*"
+            "dev.cajeta.logging": "0.5.*",
+            "dev.cajeta.unit":    "0.1.*"
         },
 
-        "dev-dependencies": {
-            "dev.cajeta.unit": "0.1.*"
-        },
+        "dev-dependencies": {},
 
         "repositories": [
             { "name": "olla", "url": "https://olla.cajeta.dev",

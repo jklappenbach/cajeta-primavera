@@ -70,6 +70,12 @@ public class SessionScope {
         return SessionScope.STORE.evictExpired();
     }
 
+    /** Drop every session ("log everyone out"). Returns the number dropped. */
+    public static int32 invalidateAll() {
+        SessionScope.ensure();
+        return SessionScope.STORE.invalidateAll();
+    }
+
     /** Number of sessions currently in the store. */
     public static int32 sessionCount() {
         SessionScope.ensure();
