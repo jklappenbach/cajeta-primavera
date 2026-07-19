@@ -1,0 +1,178 @@
+package dev.cajeta.primavera.context;
+
+import cajeta.collection.ArrayList;
+import cajeta.collection.HashMap;
+import cajeta.concurrent.Lock;
+import cajeta.concurrent.LockGuard;
+import cajeta.lang.stream.Stream;
+import cajeta.time.Clock;
+
+/**
+ * Owning, id-keyed store of session bags — the server-side half of session
+ * scope (plan/primavera-plan.md Phase 2). A session outlives any single
+ * request and is shared across a client's requests, so the store is
+ * process-wide state, NOT a FiberLocal binding; {@Link SessionScope} binds
+ * only the session *id* to the request extent and resolves through here.
+ *
+ * ## Ownership
+ * The backing `HashMap<String, SessionEntry>` owns its entries (toolchain
+ * >= 0.9.2 element ownership): `invalidate`/expiry `remove` and `create`
+ * displacement all DROP the evicted entry — its ScopeMap and every bean in
+ * it are freed, destructors run. Nothing leaks on eviction.
+ *
+ * ## Expiry
+ * Two independent TTLs, each disabled at 0 (the default):
+ *  - **idle** — expires when `now - lastAccessed` exceeds it; any resolve
+ *    refreshes `lastAccessed`.
+ *  - **absolute** — expires when `now - createdAt` exceeds it, regardless
+ *    of activity.
+ * Expiry is enforced lazily on `resolve` (an expired session reads as
+ * absent and is removed on the spot) AND by `evictExpired`, the sweep an
+ * idle server should run periodically so stale sessions free without
+ * waiting for their next lookup.
+ *
+ * ## Concurrency
+ * The store is shared across all in-flight requests; every public method
+ * takes the internal `Lock` for the map operation (fibers park, carriers
+ * don't block). The `ScopeMap` a resolve hands back is a borrow of store
+ * state: it stays valid until that session is invalidated or expires.
+ * v1 posture: invalidating a session that another in-flight request is
+ * actively using is a caller-coordination bug — the web tier (Phase 4)
+ * serializes a session's requests or defers invalidation to request end.
+ *
+ * ## Testing
+ * Every time-sensitive operation has an `...At(id, now)` form taking the
+ * timestamp explicitly, so tests drive expiry deterministically; the
+ * clockless forms are the production surface (`Clock.millisTime()`).
+ */
+public class SessionStore {
+    HashMap<String, SessionEntry> sessions;
+    Lock gate;
+    int64 idleTtlMillis;
+    int64 absoluteTtlMillis;
+
+    public SessionStore() {
+        HashMap<String, SessionEntry> created = heap HashMap<String, SessionEntry>();
+        this.sessions = #created;
+        Lock lock = heap Lock();
+        this.gate = #lock;
+        this.idleTtlMillis = 0;
+        this.absoluteTtlMillis = 0;
+    }
+
+    /** Expire sessions idle longer than `millis` (0 disables, the default). */
+    public void setIdleTtl(int64 millis) {
+        this.idleTtlMillis = millis;
+    }
+
+    /** Expire sessions older than `millis` regardless of activity (0 disables). */
+    public void setAbsoluteTtl(int64 millis) {
+        this.absoluteTtlMillis = millis;
+    }
+
+    boolean isExpired(SessionEntry e, int64 now) {
+        if (this.idleTtlMillis > 0 && (now - e.lastAccessed) > this.idleTtlMillis) {
+            return true;
+        }
+        if (this.absoluteTtlMillis > 0 && (now - e.createdAt) > this.absoluteTtlMillis) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Create a fresh session bag under `id`. An existing session for the
+     * same id is displaced — dropped with all its beans (the "login again"
+     * semantics). The store owns a private copy of the id string.
+     */
+    public void createAt(String id, int64 now) {
+        LockGuard g = this.gate.acquire();
+        SessionEntry e = heap SessionEntry(now);
+        String owned #= id.substring(0, id.byteLength());
+        this.sessions.put(#owned, #e);
+    }
+
+    public void create(String id) {
+        this.createAt(id, Clock.millisTime());
+    }
+
+    /**
+     * The session's bag, or null when no live session exists for `id`.
+     * Refreshes the idle clock; an expired session is evicted here and
+     * reads as absent.
+     */
+    public ScopeMap resolveAt(String id, int64 now) {
+        LockGuard g = this.gate.acquire();
+        SessionEntry e = this.sessions.get(id);
+        if (e == null) {
+            return null;
+        }
+        if (this.isExpired(e, now)) {
+            this.sessions.remove(id);
+            return null;
+        }
+        e.lastAccessed = now;
+        return e.map;
+    }
+
+    public ScopeMap resolve(String id) {
+        return this.resolveAt(id, Clock.millisTime());
+    }
+
+    /** Whether a live (non-expired) session exists for `id`. Refreshes idle. */
+    public boolean has(String id) {
+        return this.resolve(id) != null;
+    }
+
+    /** Drop the session under `id` — its bag and beans free immediately. */
+    public void invalidate(String id) {
+        LockGuard g = this.gate.acquire();
+        this.sessions.remove(id);
+    }
+
+    /**
+     * Sweep every expired session out of the store, dropping each evicted
+     * bag. Returns the number evicted. Run this periodically (or after a
+     * batch of creates) so idle-server sessions free without a lookup.
+     */
+    public int32 evictExpiredAt(int64 now) {
+        LockGuard g = this.gate.acquire();
+        // Two passes: streaming the map while removing is undefined, and the
+        // streamed keys are borrows of slot state — copy the doomed ids out
+        // first, then remove (each discarded remove drops its entry).
+        ArrayList<String> doomed = heap ArrayList<String>();
+        Stream<Pair<String, SessionEntry>> es #= this.sessions.entries();
+        boolean scanning = true;
+        while (scanning) {
+            Optional<Pair<String, SessionEntry>> o = es.next();
+            if (o.isPresent()) {
+                Pair<String, SessionEntry> p = o.get();
+                if (this.isExpired(p.second(), now)) {
+                    String id = p.first();
+                    String copy #= id.substring(0, id.byteLength());
+                    doomed.add(#copy);
+                }
+            } else {
+                scanning = false;
+            }
+        }
+        int32 i = 0;
+        int32 n = doomed.count();
+        while (i < n) {
+            String id = doomed.get(i);
+            this.sessions.remove(id);
+            i = i + 1;
+        }
+        return n;
+    }
+
+    public int32 evictExpired() {
+        return this.evictExpiredAt(Clock.millisTime());
+    }
+
+    /** Number of sessions currently held (live or not-yet-swept expired). */
+    public int32 count() {
+        LockGuard g = this.gate.acquire();
+        return (int32) this.sessions.count();
+    }
+}

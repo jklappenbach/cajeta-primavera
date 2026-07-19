@@ -1,0 +1,20 @@
+package dev.cajeta.primavera.context;
+
+/**
+ * One live session inside a {@Link SessionStore}: the owned bag of
+ * session-scoped beans plus the expiry bookkeeping the store's TTL policy
+ * reads. The entry OWNS its ScopeMap, so dropping the entry (invalidate,
+ * expiry eviction, store teardown) drops the bag and every bean in it.
+ */
+public class SessionEntry {
+    public ScopeMap map;
+    public int64 createdAt;
+    public int64 lastAccessed;
+
+    public SessionEntry(int64 now) {
+        ScopeMap created = heap ScopeMap();
+        this.map = #created;
+        this.createdAt = now;
+        this.lastAccessed = now;
+    }
+}

@@ -1,0 +1,143 @@
+package dev.cajeta.primavera.context;
+
+import cajeta.concurrent.FiberLocal;
+
+/**
+ * Session scope — ambient access to the *current* session for a request.
+ *
+ * A session outlives any single request, so the session state itself lives
+ * in the process-wide {@Link SessionStore}, never in a request binding.
+ * What IS bound per-request is only the session **id** (a cheap owned
+ * String) via `FiberLocal`, for the request's dynamic extent: the web tier
+ * reads the id from the transport (cookie / token), wraps the handler in
+ * `attach(id, body)`, and handler code anywhere on the call path reaches
+ * the session bag through the static accessors with no parameter threading.
+ * Like {@Link RequestScope}, the binding rides the fiber — correct under
+ * both fiber-per-request and completion-port executors.
+ *
+ * ```cajeta
+ * SessionScope.configure(30 * 60 * 1000, 12 * 60 * 60 * 1000);  // idle, absolute
+ * SessionScope.create(sessionId);                 // at login
+ * SessionScope.attach(sessionId, () -> {
+ *     handler.handle(request);                    // lookup()/store() live here
+ * });                                             // id binding pops; the session persists
+ * ```
+ *
+ * The bag's lifetime is the store's: `attach` ending never frees session
+ * beans — only `invalidate`, TTL expiry, or store teardown does.
+ */
+public class SessionScope {
+    // Process-wide session store + the per-request id binding. Both are
+    // lazily constructed owned statics (see RequestScope.SCOPE for the
+    // pattern and the v1 first-touch-race caveat); accessors dispatch on
+    // the fields directly and never hand the statics out.
+    static SessionStore STORE;
+    static FiberLocal<String> ID;
+
+    static void ensure() {
+        if (SessionScope.STORE == null) {
+            SessionStore createdStore = heap SessionStore();
+            SessionScope.STORE = #createdStore;
+        }
+        if (SessionScope.ID == null) {
+            FiberLocal<String> createdId = heap FiberLocal<String>();
+            SessionScope.ID = #createdId;
+        }
+    }
+
+    /** Set the store's TTLs: idle and absolute, in millis, 0 disables. */
+    public static void configure(int64 idleTtlMillis, int64 absoluteTtlMillis) {
+        SessionScope.ensure();
+        SessionScope.STORE.setIdleTtl(idleTtlMillis);
+        SessionScope.STORE.setAbsoluteTtl(absoluteTtlMillis);
+    }
+
+    /** Create (or displace) the session under `sessionId` — e.g. at login. */
+    public static void create(String sessionId) {
+        SessionScope.ensure();
+        SessionScope.STORE.create(sessionId);
+    }
+
+    /** Drop the session under `sessionId` and all its beans — e.g. at logout. */
+    public static void invalidate(String sessionId) {
+        SessionScope.ensure();
+        SessionScope.STORE.invalidate(sessionId);
+    }
+
+    /** Sweep expired sessions from the store; returns the number evicted. */
+    public static int32 evictExpired() {
+        SessionScope.ensure();
+        return SessionScope.STORE.evictExpired();
+    }
+
+    /** Number of sessions currently in the store. */
+    public static int32 sessionCount() {
+        SessionScope.ensure();
+        return SessionScope.STORE.count();
+    }
+
+    /**
+     * Run `body` with `sessionId` bound as the current session for its
+     * dynamic extent. The binding owns a private copy of the id, so the
+     * caller's string is only borrowed for this call.
+     */
+    public static void attach(String sessionId, () -> void body) {
+        SessionScope.ensure();
+        String owned #= sessionId.substring(0, sessionId.byteLength());
+        SessionScope.ID.where(#owned, body);
+    }
+
+    /**
+     * Whether a session is usable here: an id is attached AND the store
+     * holds a live (non-expired) session for it.
+     */
+    public static boolean isActive() {
+        SessionScope.ensure();
+        if (SessionScope.ID.isBound() == false) {
+            return false;
+        }
+        return SessionScope.STORE.resolve(SessionScope.ID.get()) != null;
+    }
+
+    // The current session's bag, or null when no id is attached or the
+    // session is gone/expired. Each access resolves id -> store fresh (and
+    // refreshes the idle clock) — the bag is never cached in the request.
+    static ScopeMap bag() {
+        SessionScope.ensure();
+        if (SessionScope.ID.isBound() == false) {
+            return null;
+        }
+        return SessionScope.STORE.resolve(SessionScope.ID.get());
+    }
+
+    /** Whether a bean is bound for `typeName` in the current session. */
+    public static boolean has(String typeName) {
+        ScopeMap m = SessionScope.bag();
+        if (m == null) {
+            return false;
+        }
+        return m.has(typeName);
+    }
+
+    /** The bean bound for `typeName` in the current session, or null. */
+    public static Object lookup(String typeName) {
+        ScopeMap m = SessionScope.bag();
+        if (m == null) {
+            return null;
+        }
+        return m.lookup(typeName);
+    }
+
+    /**
+     * Store `instance` under `typeName` in the current session, taking
+     * ownership for the session's lifetime. Throws when no live session is
+     * attached — callers that may run sessionless guard with `isActive()`.
+     */
+    public static void store(String typeName, #Object instance) {
+        ScopeMap m = SessionScope.bag();
+        if (m == null) {
+            throw heap Exception("SessionScope.store: no live session attached");
+        }
+        m.store(typeName, #instance);
+    }
+}
