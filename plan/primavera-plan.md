@@ -36,19 +36,29 @@ indivisible. Tracked on the cajeta-two side.)
   correct under both fiber-per-request and completion-port executors.
 - Runtime self-test (`selftest/SelfTest`) — enter / store / lookup / teardown.
 
-## Phase 2 — Session scope
+## Phase 2 — Session scope ✅ (shipped 2026-07-19)
 
 A session outlives a single request and is shared across a client's requests, so
-it is **not** a `FiberLocal` binding. Build:
+it is **not** a `FiberLocal` binding. Shipped:
 
-- `SessionStore` — owning, id-keyed store of session `ScopeMap`s; create / get /
-  invalidate; **expiry** (idle + absolute TTL); **concurrency-safe** access
-  (the store is shared across all in-flight requests — guard with the stdlib
-  `Lock` / `LockGuard`; timestamps from `Clock.millisTime()`).
+- `SessionStore` — owning, id-keyed store of session bags (`SessionEntry` =
+  `ScopeMap` + expiry bookkeeping); create / resolve / invalidate; **expiry**
+  (idle + absolute TTL, each 0-disabled) enforced lazily on resolve AND by an
+  `evictExpired` sweep; **concurrency-safe** (`Lock`/`LockGuard` around every
+  map operation; `Clock.millisTime()` timestamps). Every eviction path —
+  expiry, sweep, invalidate, create-displacement — DROPS the bag and its
+  beans. Deterministically testable via the `...At(id, now)` forms.
 - `SessionScope` — ambient access to the *current* session for a request:
-  bind the session **id** (cheap, owned `String`) via `FiberLocal` for the
-  request extent, resolve id → store on access. The session map's lifetime is
-  the store's, never the request binding's.
+  binds the session **id** (owned `String` copy) via `FiberLocal` for the
+  request extent (`attach`), resolves id → store on every access. The session
+  map's lifetime is the store's, never the request binding's.
+- Self-tests cover TTL refresh/expiry, the sweep, displacement, invalidation
+  drops, cross-request persistence, and session isolation.
+- v1 liabilities: the lazy static init shares RequestScope's first-touch-race
+  caveat; invalidating a session another in-flight request is actively using
+  is a caller-coordination bug (the Phase-4 web tier serializes or defers);
+  scheduling the periodic `evictExpired` sweep belongs to the Phase-4
+  executor.
 
 > **BLOCKER RESOLVED (2026-07-19, toolchain 0.9.2).** The 2026-06-16 finding —
 > "cajeta collections are non-owning" — is fixed by the compiler's
@@ -75,16 +85,29 @@ it is **not** a `FiberLocal` binding. Build:
 > a candidate substrate for the idle-TTL half; absolute TTL and locking still
 > live in `SessionStore`.
 
-## Phase 3 — Component lifecycle integration
+## Phase 3 — Component lifecycle integration (runtime path ✅, wiring open)
 
-- Wire request/session scope to `@Component` allocation modes so a request- or
-  session-scoped component resolves through `RequestScope` / `SessionScope`
-  get-or-create instead of the singleton path.
-- Reconcile with the `ALLOCATE_*` modes documented in the **stdlib**
-  `docs/specification/lang/AspectModel.md` (`CALL_SCOPE` is currently stubbed in
-  the compiler). Request scope is the new, primavera-owned scope layered over them.
+- ✅ **The runtime resolution path is shipped**: `materialize(typeName,
+  factory)` + `lookup(typeName)` on both `RequestScope` and `SessionScope` —
+  the get-or-create pair a scoped `@Component` accessor compiles down to.
+  (A single get-or-create call is impossible under the borrow rules:
+  a multi-parameter function may not return a borrow,
+  `CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM`; the borrow must come from the
+  single-param `lookup`.)
+- Open (cajeta-two side): wire `@Component` allocation modes so a request- or
+  session-scoped component's generated accessor emits that pair instead of
+  the singleton path. Reconcile with the `ALLOCATE_*` modes documented in the
+  **stdlib** `docs/specification/lang/AspectModel.md` (`CALL_SCOPE` is
+  currently stubbed in the compiler). Request scope is the new,
+  primavera-owned scope layered over them.
 
-## Phase 4 — Web request/session model (policy over `cajeta-http`)
+## Phase 4 — Web request/session model (policy over `cajeta-http`) — DEFERRED
+
+> **DEFERRED (2026-07-19): cajeta-http is far from ready.** The HTTP library
+> this phase layers policy on is in early development, so no primavera work
+> can land against it yet. Everything above (scopes, stores, the
+> materialize/lookup resolution path) is deliberately http-free and complete
+> without it; resume this phase when cajeta-http has a usable server surface.
 
 The HTTP engine is **not** primavera's — it is the
 [`cajeta-http`](https://github.com/jklappenbach/cajeta-http) library
@@ -122,7 +145,12 @@ primavera's internals:
 - **Remove the static-field-method-receiver workaround** in `RequestScope` once
   the cajeta-two codegen bug is fixed (see project memory
   `static-field-method-receiver-segv`).
-- **Once-guard** the lazy `FiberLocal` key init against a first-touch race.
+- **Once-guard** the lazy static init against a first-touch race — now three
+  sites: `RequestScope.SCOPE`, `SessionScope.STORE`, `SessionScope.ID`.
+  (Benign on the single-carrier cooperative scheduler — `ensure()` has no
+  park/yield point — but wrong under multi-carrier parallelism. Wants a
+  language-level static-init or once primitive rather than a hand-rolled
+  guard, whose own lock static has the same bootstrap race.)
 - **Wire the real dependencies** (`dev.cajeta.logging` runtime, `dev.cajeta.unit`
   dev) in `cajeta.json` once they are resolvable (registry publish or
   path-dependency); primavera's web/component layer logs through cajeta-logging.

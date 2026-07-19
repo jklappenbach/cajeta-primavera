@@ -90,33 +90,38 @@ event-driven executors. Full spec: [`RequestScope.md`](../RequestScope.md). A
 request-scoped component resolves through `RequestScope` get-or-create rather than
 the singleton path (wired at the web boundary, §6).
 
-### 3.4 Session scope — **per spec**
+### 3.4 Session scope — **✅ shipped** (2026-07-19)
 
 A session outlives a single request and is shared across a client's requests, so it
 is **not** a `FiberLocal` binding — it is an owning, id-keyed, expiring,
-concurrency-safe store:
+concurrency-safe store. Shipped as
+`dev.cajeta.primavera.context.{SessionStore, SessionEntry, SessionScope}`:
 
 ```cajeta
-@Component class SessionStore {                 // singleton
-    Session getOrCreate(String id);             // by session id
-    Optional<Session> get(String id);
-    void invalidate(String id);                 // drops the session + its bean graph
-    // expiry: idle TTL + absolute TTL; concurrency-safe (Lock/LockGuard);
-    // timestamps from Clock.millisTime().
+class SessionStore {                     // process-wide, owning, id-keyed
+    void create(String id);              // displaces (drops) an existing session
+    ScopeMap resolve(String id);         // null when absent/expired; refreshes idle
+    void invalidate(String id);          // drops the session + its bean graph
+    int32 evictExpired();                // sweep; returns evicted count
+    // expiry: idle TTL + absolute TTL (0 = disabled); Lock/LockGuard-guarded;
+    // Clock.millisTime(); deterministic `...At(id, now)` forms for tests.
 }
-@Component class SessionScope {                  // ambient access to the current session
+class SessionScope {                     // ambient access to the current session
+    static void attach(String id, () -> void body);  // binds the id per request
     static boolean isActive();
-    static ScopeMap current();                   // resolves the bound id → store
-    // binds the session ID (a cheap owned String) via FiberLocal for the request
+    static Object lookup(String typeName);
+    static void store(String typeName, #Object instance);
+    static void materialize(String typeName, () -> #Object factory);
+    // binds the session ID (an owned String copy) via FiberLocal for the request
     // extent; the session map's lifetime is the store's, never the request binding's.
 }
 ```
 
-> **BLOCKER.** A correct *evicting* store must **own** the session bags (so an
-> invalidated session's beans free) and remove them on expiry. Cajeta collections
-> are non-owning today; this needs the compiler-level owning-collection work
-> (stdlib `owning-collections` plan). Session scope is blocked on it — the API is
-> specified, the implementation waits.
+> The former owning-collections **blocker is resolved** — toolchain 0.9.2's
+> element-ownership work made collections own their `#`-transferred elements, so
+> every eviction path (expiry, sweep, invalidate, displacement) drops the bag and
+> its beans. Verified by drop-tracking; pinned by the runtime self-tests. See
+> `plan/primavera-plan.md` and `docs/SessionScope.md`.
 
 ### 3.5 Connection & principal scopes + presence — **per spec**
 

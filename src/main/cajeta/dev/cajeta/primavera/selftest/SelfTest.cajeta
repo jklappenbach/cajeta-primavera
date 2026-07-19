@@ -23,6 +23,13 @@ import dev.cajeta.primavera.context.SessionStore;
  */
 public class SelfTest {
     static int32 failures;
+    static int32 factoryCalls;
+
+    static #Object makeBean() {
+        SelfTest.factoryCalls = SelfTest.factoryCalls + 1;
+        Bean nb = heap Bean(99);
+        return #nb;
+    }
 
     static void check(boolean cond, String label) {
         if (cond == false) {
@@ -198,6 +205,44 @@ public class SelfTest {
         SelfTest.check(SessionScope.sessionCount() == 0, "store empty after invalidations");
     }
 
+    static void testMaterialize() {
+        System.stdout.println("-- materialize + lookup (scoped-component resolution path) --");
+        String key = "dev.cajeta.primavera.selftest.Bean";
+
+        // Request scope: factory runs once; later resolves reuse the instance;
+        // the instance drops with the scope.
+        Bean.drops = 0;
+        SelfTest.factoryCalls = 0;
+        RequestScope.enter(() -> {
+            RequestScope.materialize(key, () -> { return #(SelfTest.makeBean()); });
+            Object first = RequestScope.lookup(key);
+            SelfTest.check(first != null, "request materialize creates on first access");
+            SelfTest.check(SelfTest.factoryCalls == 1, "factory ran once");
+
+            RequestScope.materialize(key, () -> { return #(SelfTest.makeBean()); });
+            Object second = RequestScope.lookup(key);
+            SelfTest.check(SelfTest.factoryCalls == 1, "second access does not re-run the factory");
+            SelfTest.check(first == second, "same instance for the request's lifetime");
+        });
+        SelfTest.check(Bean.drops == 1, "materialized bean drops at request end");
+
+        // Session scope: created once, reused across requests of the session.
+        Bean.drops = 0;
+        SelfTest.factoryCalls = 0;
+        SessionScope.create("sess-G");
+        SessionScope.attach("sess-G", () -> {
+            SessionScope.materialize(key, () -> { return #(SelfTest.makeBean()); });
+            SelfTest.check(SessionScope.lookup(key) != null, "session materialize creates on first access");
+        });
+        SessionScope.attach("sess-G", () -> {
+            SessionScope.materialize(key, () -> { return #(SelfTest.makeBean()); });
+            SelfTest.check(SessionScope.lookup(key) != null, "session bean resolves on later request");
+            SelfTest.check(SelfTest.factoryCalls == 1, "session factory ran once across requests");
+        });
+        SessionScope.invalidate("sess-G");
+        SelfTest.check(Bean.drops == 1, "session materialized bean drops on invalidate");
+    }
+
     public static int32 run() {
         SelfTest.failures = 0;
         System.stdout.println("== primavera self-tests (request + session scope) ==");
@@ -205,6 +250,7 @@ public class SelfTest {
         SelfTest.testRequestScope();
         SelfTest.testSessionStore();
         SelfTest.testSessionScope();
+        SelfTest.testMaterialize();
 
         if (SelfTest.failures == 0) {
             System.stdout.println("  all primavera self-tests passed");

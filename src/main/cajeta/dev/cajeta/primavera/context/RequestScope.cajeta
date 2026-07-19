@@ -122,4 +122,29 @@ public class RequestScope {
         RequestScope.ensure();
         RequestScope.SCOPE.get().store(typeName, #instance);
     }
+
+    /**
+     * Create the bean for `typeName` via `factory` and store it, iff none is
+     * bound yet. Paired with `lookup`, this is the get-or-create resolution
+     * path a request-scoped @Component compiles down to (Phase 3):
+     *
+     * ```cajeta
+     * RequestScope.materialize(key, () -> { return #(heap MyService()); });
+     * MyService s = (MyService) RequestScope.lookup(key);
+     * ```
+     *
+     * (Two calls rather than one returning the bean: a multi-parameter
+     * function may not return a borrow — CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM
+     * — so the borrow comes from single-param `lookup`.) Throws when no
+     * scope is active.
+     */
+    public static void materialize(String typeName, () -> #Object factory) {
+        RequestScope.ensure();
+        ScopeMap m = RequestScope.SCOPE.get();
+        if (m.has(typeName)) {
+            return;
+        }
+        Object created #= factory();
+        m.store(typeName, #created);
+    }
 }

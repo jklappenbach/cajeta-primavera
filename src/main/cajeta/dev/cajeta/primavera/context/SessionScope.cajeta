@@ -140,4 +140,23 @@ public class SessionScope {
         }
         m.store(typeName, #instance);
     }
+
+    /**
+     * Create the bean for `typeName` via `factory` and store it in the
+     * current session, iff none is bound yet. Paired with `lookup`, this is
+     * the get-or-create resolution path a session-scoped @Component
+     * compiles down to (Phase 3; see RequestScope.materialize for why the
+     * pair, not one call). Throws when no live session is attached.
+     */
+    public static void materialize(String typeName, () -> #Object factory) {
+        ScopeMap m = SessionScope.bag();
+        if (m == null) {
+            throw heap Exception("SessionScope.materialize: no live session attached");
+        }
+        if (m.has(typeName)) {
+            return;
+        }
+        Object created #= factory();
+        m.store(typeName, #created);
+    }
 }

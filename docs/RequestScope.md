@@ -34,6 +34,7 @@ primitive, not hard-wired to threads: the primitive already solved propagation.
 | `has(String typeName)` | whether a bean is bound for `typeName` (false, not throw, when no scope active) |
 | `lookup(String typeName)` | the bean for `typeName`, or null |
 | `store(String typeName, #Object instance)` | bind `instance` under `typeName`, taking ownership for the request |
+| `materialize(String typeName, () -> #Object factory)` | create-and-store via `factory` iff unbound; pair with `lookup` for get-or-create (a multi-param function may not return a borrow, so one combined call is impossible) |
 
 Beans are keyed by fully-qualified type name (`String`). The typical pattern is
 get-or-create:
