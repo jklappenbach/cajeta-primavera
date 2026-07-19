@@ -29,6 +29,7 @@ public class SelfTest {
         System.stdout.println("== primavera self-tests (request scope over FiberLocal) ==");
 
         String key = "dev.cajeta.primavera.selftest.Bean";
+        Bean.drops = 0;
 
         // Outside any request, no scope is active and lookups are inert.
         SelfTest.check(RequestScope.isActive() == false, "no scope active before enter");
@@ -50,10 +51,20 @@ public class SelfTest {
             SelfTest.check(got != null, "lookup returns the bean");
             Bean gb = (Bean) got;
             SelfTest.check(gb.value == 42, "looked-up bean carries its stored state");
+
+            // Keys are matched by content, not identity: a distinct-but-equal
+            // String object must find the same binding (reflective type names
+            // are not guaranteed interned).
+            String key2 = "dev.cajeta.primavera.selftest." + "Bean";
+            SelfTest.check(RequestScope.has(key2), "lookup matches a distinct-but-equal key");
+
+            SelfTest.check(Bean.drops == 0, "bean alive for the whole request extent");
         });
 
-        // The bag — and the bean it owned — drop when enter() returns.
+        // The bag — and the bean it owned — drop when enter() returns: the
+        // bean's destructor must have run exactly once (leak-free scope end).
         SelfTest.check(RequestScope.isActive() == false, "no scope active after enter returns");
+        SelfTest.check(Bean.drops == 1, "scope end drops the owned bean (destructor ran)");
 
         if (SelfTest.failures == 0) {
             System.stdout.println("  all primavera self-tests passed");

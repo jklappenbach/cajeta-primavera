@@ -1,78 +1,60 @@
 package dev.cajeta.primavera.context;
 
-import cajeta.collection.ArrayList;
+import cajeta.collection.HashMap;
 
 /**
  * A per-scope object store: a fully-qualified type name -> the single
  * instance bound for that type within one request (or session).
  *
- * The `instances` list holds the scoped beans; the parallel `keys` list is a
- * pure lookup index. A linear scan is the right data structure here because the
- * number of distinct scoped beans per request is small (typically a handful),
- * and avoiding a hash map keeps the store allocation-light on the hot path.
+ * The store OWNS its beans: `store` transfers the instance's title into the
+ * backing map (title-tracking `#=` slot store), so when the ScopeMap drops at
+ * scope end every bean's destructor runs and its memory is freed. The same
+ * holds for eviction — a `HashMap.remove` whose result is discarded drops the
+ * evicted value — which is what makes this store reusable as the per-session
+ * bag under Phase 2's evicting SessionStore. (Requires toolchain >= 0.9.2:
+ * earlier collections were non-owning and this store leaked; verified by
+ * drop-tracking 2026-07-19, see plan/primavera-plan.md.)
  *
- * KNOWN LIMITATION (v1): `ArrayList<T>` does NOT drop its elements when it
- * drops (verified — cajeta collections are non-owning today; see the memory-
- * model note in plan/primavera-plan.md). So scoped beans are currently **leaked** at
- * request/session end rather than freed. This is harmless for short-lived
- * processes but wrong for a long-running server, and is blocked on a language-
- * level owning-collection fix (compiler-synthesized element drop). Do not rely
- * on bean destructors running at scope end yet.
+ * Keys are matched by CONTENT (`String.operator==` byte equality), not
+ * identity — reflective type names are not guaranteed interned, so two equal
+ * names may be distinct String objects. The map also owns a private copy of
+ * each key (`substring` materializes one), so a stored binding never dangles
+ * on a caller-owned key string that drops before the scope does.
  *
  * This is the runtime backing for request- and session-scoped @Component
  * beans (primavera's component lifecycle, documented in docs/Components.md).
  */
 public class ScopeMap {
-    ArrayList<String> keys;
-    ArrayList<Object> instances;
+    HashMap<String, Object> instances;
 
     public ScopeMap() {
-        this.keys = heap ArrayList<String>();
-        this.instances = heap ArrayList<Object>();
-    }
-
-    // Index of `key` in the parallel arrays, or -1 when absent. Byte-equality
-    // (String.equals) rather than identity: reflective type names are not
-    // guaranteed interned, so two equal names may be distinct String objects.
-    int32 indexOf(String key) {
-        int32 i = 0;
-        int32 n = this.keys.count();
-        while (i < n) {
-            String k = this.keys.get(i);
-            if (k.equals(key)) {
-                return i;
-            }
-            i = i + 1;
-        }
-        return -1;
+        this.instances = heap HashMap<String, Object>();
     }
 
     /** Whether an instance is already bound for `key`. */
     public boolean has(String key) {
-        return this.indexOf(key) >= 0;
+        return this.instances.containsKey(key);
     }
 
     /** The instance bound for `key`, or null when none is bound. */
     public Object lookup(String key) {
-        int32 i = this.indexOf(key);
-        if (i < 0) {
-            return null;
-        }
-        return this.instances.get(i);
+        return this.instances.get(key);
     }
 
     /**
      * Bind `value` for `key`, taking ownership for the scope's lifetime.
      * Caller must check `has(key)` first for an idempotent get-or-create;
-     * this method always appends.
+     * a re-store for the same key drops the displaced instance.
      */
     public void store(String key, #Object value) {
-        this.keys.add(key);
-        this.instances.add(value);
+        // Own a copy of the key: the caller's string may drop before the
+        // scope does, and the map must not hold a borrowed key past that.
+        String owned #= key.substring(0, key.byteLength());
+        this.instances.put(#owned, #value);
     }
 
     /** Number of scoped instances currently held. */
     public int32 count() {
-        return this.keys.count();
+        return (int32) this.instances.count();
     }
 }

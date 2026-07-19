@@ -47,19 +47,20 @@ Bean b = (Bean) RequestScope.lookup(key);
 
 ## Ownership & lifecycle
 
-`ScopeMap` holds the beans in an `ArrayList<Object>`; a parallel key list is the
-lookup index — a linear scan, the right structure for the handful of beans a
-typical request touches. The `ScopeMap` itself is owned by the `FiberLocal`
+`ScopeMap` holds the beans in a `HashMap<String, Object>` that **owns** both
+keys and values: `store` transfers the bean's title into the map slot
+(title-tracking `#=`) and materializes a private copy of the key, so bindings
+are matched by content (`String.operator==`) and never dangle on a
+caller-owned key string. The `ScopeMap` itself is owned by the `FiberLocal`
 binding created in `enter`, so when `enter`'s body returns or throws, the
-binding pops and the `ScopeMap` is freed. The *scope* cannot outlive the
-request.
+binding pops and the `ScopeMap` is freed — **and every bean it owns drops with
+it**: destructors run at request end, and a re-store for an existing key drops
+the displaced instance. The *scope* cannot outlive the request.
 
-> **KNOWN LIMITATION (v1): scoped beans leak.** `ArrayList<T>` does not drop its
-> elements (verified — cajeta collections are non-owning today), so the beans in
-> a `ScopeMap` are **not** freed at request end; their destructors do not run.
-> Harmless for a short-lived process, wrong for a long-running server. The fix is
-> a language-level owning-collection change (compiler-synthesized element drop),
-> tracked in `plan/primavera-plan.md`. Don't rely on bean teardown at scope end yet.
+> Leak-free scope end requires **toolchain >= 0.9.2** (the element-ownership /
+> title-tracking work). On earlier toolchains collections were non-owning and
+> scoped beans leaked; the resolution is recorded in `plan/primavera-plan.md`
+> and pinned by the self-test's `Bean.drops` assertions.
 
 ## Implementation notes & v1 limitations
 

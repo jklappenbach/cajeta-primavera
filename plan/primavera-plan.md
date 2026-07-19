@@ -50,27 +50,30 @@ it is **not** a `FiberLocal` binding. Build:
   request extent, resolve id → store on access. The session map's lifetime is
   the store's, never the request binding's.
 
-> **BLOCKER (found 2026-06-16): cajeta collections are non-owning.**
-> A correct *evicting* session store needs to hold session bags it OWNS (so an
-> evicted/invalidated session — and its `ScopeMap` of beans — actually frees)
-> AND remove them on expiry/invalidate. Verified empirically (`--emit=exe`
-> drop-tracking):
-> - `ArrayList<T>` does **NOT drop its elements** when it drops — they LEAK.
->   (The destructor mechanism works for plain locals; the list just never drives
->   element drops.) It also has no `remove`/`clear`.
-> - Reassignment doesn't drop the overwritten value; there's no user-level
->   explicit-drop keyword.
-> - `HashMap<K,V>` has `remove` but holds **borrowed** values
->   (`vals[idx]=value`), so eviction would leak the bag graph.
+> **BLOCKER RESOLVED (2026-07-19, toolchain 0.9.2).** The 2026-06-16 finding —
+> "cajeta collections are non-owning" — is fixed by the compiler's
+> element-ownership / title-tracking program (per-slot ownership bits, `#=`
+> transfer stores, drop walks that free exactly the owned slots), shipped in
+> cajeta **0.9.2**. Re-verified empirically by drop-tracking under 0.9.2
+> (destructor-counter fixture, `jit-run`):
+> - `ArrayList<T>` **drops its `#`-transferred elements** when it drops
+>   (still no `insert`/`remove` in v1).
+> - `HashMap<K,V>` **owns `#`-transferred keys and values**: teardown drops
+>   them, a discarded `remove(k)` drops the evicted value (no double-drop),
+>   and a `put` overwrite drops the displaced value — exactly the evicting
+>   primitive `SessionStore` needs.
+> - The transfer is caller-spelled: `add(v)` lends, `add(#v)` transfers. An
+>   owned `#T` param passed onward WITHOUT `#` drops at the callee's end while
+>   the collection keeps a dangling borrow — the shape the old `ScopeMap.store`
+>   had. Fixed 2026-07-19: `ScopeMap` now backs onto an owning
+>   `HashMap<String, Object>` (content-keyed, owns a private key copy), and the
+>   self-test asserts the bean's destructor runs at request end.
 >
-> Consequence: even the request bag (`ScopeMap`) currently **leaks** its beans at
-> request end. A real owning collection needs **compiler-level** support: the
-> synthesized drop for a container must drop live elements `[0, sizeCount)` when
-> `T` is an owned reference type (the compiler knows T's ownership; user template
-> code can't branch on it, and `__cajeta_class_virtual_drop` would crash on a
-> primitive `T`). This is a **language memory-model decision** — escalated to the
-> language author. Tracked in project memory `collections-dont-own-elements`.
-> Phase 2 (and leak-free request scope) is blocked on it.
+> Request scope is now leak-free and Phase 2 is **unblocked**. Note for the
+> session store: stdlib 0.9.2 also ships `cajeta.collection.Cache<K,V>`
+> (LRU + idle-TTL, expire-on-lookup + manual `evict` pass, NOT thread-safe) —
+> a candidate substrate for the idle-TTL half; absolute TTL and locking still
+> live in `SessionStore`.
 
 ## Phase 3 — Component lifecycle integration
 

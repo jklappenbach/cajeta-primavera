@@ -1,10 +1,20 @@
 package dev.cajeta.primavera.selftest;
 
-/** A trivial stored-bean fixture for the request-scope self-tests. */
+/**
+ * A trivial stored-bean fixture for the request-scope self-tests. Counts its
+ * destructor firings in `drops` so the tests can assert scope-owned beans are
+ * actually freed at scope end (leak-free request scope, toolchain >= 0.9.2).
+ */
 public class Bean {
+    public static int32 drops;
+
     public int32 value;
 
     public Bean(int32 v) {
         this.value = v;
+    }
+
+    public ~Bean() {
+        Bean.drops = Bean.drops + 1;
     }
 }
