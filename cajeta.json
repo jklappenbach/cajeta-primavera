@@ -23,6 +23,17 @@
     },
 
     "settings": {
+        // The compiler build this library is developed against (distinct from
+        // `details.cajeta-lang-version`, which pins the language/stdlib API
+        // surface). On this machine 0.9.2 is the locally built toolchain from
+        // ~/code/cpp/cajeta (installed at /usr/lib/cajeta); its publish to
+        // Olla (https://olla.cajeta.dev) is in flight, so `from` lets any
+        // machine without the local build auto-fetch it once it lands.
+        "toolchain": {
+            "version": "0.9.2",
+            "from":    "https://olla.cajeta.dev"
+        },
+
         "capabilities": [],
 
         // INTENDED dependencies (not yet wired — neither library is published
@@ -36,7 +47,7 @@
         "dev-dependencies": {},
 
         "repositories": [
-            { "name": "central", "url": "https://repo.cajeta.org",
+            { "name": "olla", "url": "https://olla.cajeta.dev",
               "priority": 0 }
         ],
 
