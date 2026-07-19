@@ -186,8 +186,17 @@ Compiler/runtime findings hit while building this (upstream, cajeta-two):
 - ✅ **Dependencies wired** (2026-07-19): `dev.cajeta.logging 0.5.*` (runtime)
   and `dev.cajeta.unit 0.1.*` (dev) resolve from the local Olla repository
   (`cajeta install` from the sibling checkouts) until the olla.cajeta.dev
-  publishes land. Phase 5 is no longer dependency-blocked. Still to do:
-  actually log through cajeta-logging in the web/component layer.
+  publishes land. Phase 5 is no longer dependency-blocked.
+- ✅ **cajeta-logging wired in** (2026-07-19): `SessionStore` is `@Logged` —
+  DEBUG per-session lifecycle events (create / expire-on-resolve /
+  invalidate, structured `id` field), INFO administrative sweeps
+  (evictExpired / invalidateAll with `count`). Hot paths (resolve hit,
+  scope lookup/store) deliberately unlogged. The `test` task now builds
+  `--profile=test` (capturing appender masks output; also activates
+  cajeta-unit's TestContext @Inject override registry); verified end-to-end
+  under `profile=dev` (console TextEncoder shows the structured lines,
+  DEBUG suppressed at the INFO default). Remaining logging surface (web
+  boundary, component lifecycle) lands with Phase 4.
 
 ## Dependency on cajeta-two work
 

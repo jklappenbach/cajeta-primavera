@@ -75,7 +75,7 @@
         "test": {
             "description": "Build + run primavera's unit tests (fails on any failure)",
             "actions": [
-                { "action": "build", "flavor": "debug",
+                { "action": "build", "flavor": "debug", "profile": "test",
                   "entry-method": "dev.cajeta.primavera.selftest.SelfTest.run",
                   "id": "testbin" },
                 { "action": "test", "input": "${testbin.path}" }

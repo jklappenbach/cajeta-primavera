@@ -6,6 +6,9 @@ import cajeta.concurrent.Lock;
 import cajeta.concurrent.LockGuard;
 import cajeta.lang.stream.Stream;
 import cajeta.time.Clock;
+import dev.cajeta.logging.Level;
+import dev.cajeta.logging.Logged;
+import dev.cajeta.logging.LogRecord;
 
 /**
  * Owning, id-keyed store of session bags — the server-side half of session
@@ -45,6 +48,7 @@ import cajeta.time.Clock;
  * timestamp explicitly, so tests drive expiry deterministically; the
  * clockless forms are the production surface (`Clock.millisTime()`).
  */
+@Logged
 public class SessionStore {
     HashMap<String, SessionEntry> sessions;
     Lock gate;
@@ -90,6 +94,11 @@ public class SessionStore {
         SessionEntry e = heap SessionEntry(now);
         String owned #= id.substring(0, id.byteLength());
         this.sessions.put(#owned, #e);
+        if (log.enabled(Level.DEBUG)) {
+            LogRecord r = log.event(Level.DEBUG, "session created");
+            r.str("id", id);
+            log.emit(#r);
+        }
     }
 
     public void create(String id) {
@@ -109,6 +118,11 @@ public class SessionStore {
         }
         if (this.isExpired(e, now)) {
             this.sessions.remove(id);
+            if (log.enabled(Level.DEBUG)) {
+                LogRecord r = log.event(Level.DEBUG, "session expired on resolve");
+                r.str("id", id);
+                log.emit(#r);
+            }
             return null;
         }
         e.lastAccessed = now;
@@ -128,6 +142,11 @@ public class SessionStore {
     public void invalidate(String id) {
         LockGuard g = this.gate.acquire();
         this.sessions.remove(id);
+        if (log.enabled(Level.DEBUG)) {
+            LogRecord r = log.event(Level.DEBUG, "session invalidated");
+            r.str("id", id);
+            log.emit(#r);
+        }
     }
 
     /**
@@ -162,6 +181,11 @@ public class SessionStore {
             String id = doomed.get(i);
             this.sessions.remove(id);
             i = i + 1;
+        }
+        if (n > 0) {
+            LogRecord r = log.event(Level.INFO, "expired sessions evicted");
+            r.i64("count", n);
+            log.emit(#r);
         }
         return n;
     }
@@ -205,6 +229,11 @@ public class SessionStore {
             String id = ids.get(i);
             this.sessions.remove(id);
             i = i + 1;
+        }
+        if (n > 0) {
+            LogRecord r = log.event(Level.INFO, "all sessions invalidated");
+            r.i64("count", n);
+            log.emit(#r);
         }
         return n;
     }
