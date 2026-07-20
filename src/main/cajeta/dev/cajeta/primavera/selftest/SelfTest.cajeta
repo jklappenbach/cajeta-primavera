@@ -4,6 +4,7 @@ import dev.cajeta.primavera.context.RequestScope;
 import dev.cajeta.primavera.context.ScopeMap;
 import dev.cajeta.primavera.context.SessionScope;
 import dev.cajeta.primavera.context.SessionStore;
+import dev.cajeta.primavera.context.ManualTimeSource;
 import dev.cajeta.primavera.test.PrimaveraTest;
 import dev.cajeta.primavera.test.TrackedBean;
 import dev.cajeta.unit.Assert;
@@ -210,6 +211,35 @@ public class SelfTest {
         });
     }
 
+    static void addClockSeamTests(TestRunner t) {
+        t.test("ambient session expiry via injected manual clock", () -> {
+            PrimaveraTest.reset();
+            Bean.drops = 0;
+
+            // Test owns the clock; the store borrows it (restored before drop).
+            ManualTimeSource clk = heap ManualTimeSource(1000);
+            SessionScope.useManualClock(clk);
+            SessionScope.configure(1000, 0);   // idle TTL 1000ms
+
+            SessionScope.create("m1");
+            PrimaveraTest.resumeSession("m1", () -> {
+                SelfTest.req(SessionScope.isActive(), "session live at t=1000 (ambient path)");
+                Bean b = heap Bean(5);
+                SessionScope.store(SelfTest.beanKey(), #b);
+            });
+
+            // Advance past the idle TTL — no ...At form, pure ambient resolve.
+            clk.advance(1500);   // t=2500, 1500ms since last access at 1000
+            PrimaveraTest.resumeSession("m1", () -> {
+                SelfTest.req(SessionScope.isActive() == false, "idle-expired on the ambient path");
+            });
+            SelfTest.req(Bean.drops == 1, "ambient expiry dropped the session bean");
+
+            // Restore the system clock BEFORE clk drops (the borrow contract).
+            SessionScope.useSystemClock();
+        });
+    }
+
     static void addMaterializeTests(TestRunner t) {
         t.test("request materialize: factory once, identity stable, drops at end", () -> {
             Bean.drops = 0;
@@ -329,6 +359,7 @@ public class SelfTest {
         SelfTest.addRequestScopeTests(t);
         SelfTest.addSessionStoreTests(t);
         SelfTest.addSessionScopeTests(t);
+        SelfTest.addClockSeamTests(t);
         SelfTest.addMaterializeTests(t);
         SelfTest.addExecutorTests(t);
 

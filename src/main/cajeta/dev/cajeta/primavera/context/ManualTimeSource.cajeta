@@ -1,0 +1,31 @@
+package dev.cajeta.primavera.context;
+
+/**
+ * A test-controllable {@Link TimeSource}: time only moves when the test
+ * moves it. Install it on the ambient session store via
+ * `SessionScope.useManualClock`, drive expiry with `set`/`advance`, and
+ * assert against the clockless `SessionScope`/`SessionStore` API — the path
+ * a real request takes. The test OWNS this; the store borrows it, so keep
+ * it alive until `PrimaveraTest.reset` restores the system clock.
+ */
+public class ManualTimeSource implements TimeSource {
+    int64 current;
+
+    public ManualTimeSource(int64 start) {
+        this.current = start;
+    }
+
+    public int64 now() {
+        return this.current;
+    }
+
+    /** Jump to an absolute time. */
+    public void set(int64 millis) {
+        this.current = millis;
+    }
+
+    /** Move time forward by `deltaMillis`. */
+    public void advance(int64 deltaMillis) {
+        this.current = this.current + deltaMillis;
+    }
+}

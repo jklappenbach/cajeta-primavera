@@ -5,7 +5,6 @@ import cajeta.collection.HashMap;
 import cajeta.concurrent.Lock;
 import cajeta.concurrent.LockGuard;
 import cajeta.lang.stream.Stream;
-import cajeta.time.Clock;
 import dev.cajeta.logging.Level;
 import dev.cajeta.logging.Logged;
 import dev.cajeta.logging.LogRecord;
@@ -44,14 +43,35 @@ import dev.cajeta.logging.LogRecord;
  * serializes a session's requests or defers invalidation to request end.
  *
  * ## Testing
- * Every time-sensitive operation has an `...At(id, now)` form taking the
- * timestamp explicitly, so tests drive expiry deterministically; the
- * clockless forms are the production surface (`Clock.millisTime()`).
+ * Two testability seams. The `...At(id, now)` forms take the timestamp
+ * explicitly — fine-grained control for DIRECT store tests. The injectable
+ * `TimeSource` (`setTimeSource`, default the process system clock) drives
+ * the CLOCKLESS forms, so a test can control time on the AMBIENT
+ * `SessionScope` path a real request takes (install a `ManualTimeSource`).
  */
 @Logged
 public class SessionStore {
+    // Process-wide default clock, owned by the class and BORROWED by every
+    // store (lifetime = process, so the borrow never dangles). Lazily built —
+    // same pattern as RequestScope.SCOPE — because object-typed static
+    // initializers aren't reliably run before first use.
+    // Concrete type (not the TimeSource interface) so the lazy null-check is a
+    // class-reference compare — an interface-typed `== null` mislowers.
+    static SystemTimeSource SYSTEM;
+
+    static SystemTimeSource systemSource() {
+        if (SessionStore.SYSTEM == null) {
+            SystemTimeSource created = heap SystemTimeSource();
+            SessionStore.SYSTEM = #created;
+        }
+        return SessionStore.SYSTEM;
+    }
+
     HashMap<String, SessionEntry> sessions;
     Lock gate;
+    // Borrowed, not owned: the installer owns the TimeSource (the class owns
+    // SYSTEM; a test owns its ManualTimeSource). The store never drops it.
+    TimeSource clock;
     int64 idleTtlMillis;
     int64 absoluteTtlMillis;
 
@@ -60,8 +80,19 @@ public class SessionStore {
         this.sessions = #created;
         Lock lock = heap Lock();
         this.gate = #lock;
+        this.clock = SessionStore.systemSource();
         this.idleTtlMillis = 0;
         this.absoluteTtlMillis = 0;
+    }
+
+    /**
+     * Install the clock this store reads time through (borrowed — caller
+     * retains ownership). The R1 test seam: install a ManualTimeSource to
+     * drive expiry deterministically on the ambient path. Pass the system
+     * source to restore production behavior.
+     */
+    public void setTimeSource(TimeSource source) {
+        this.clock = source;
     }
 
     /** Expire sessions idle longer than `millis` (0 disables, the default). */
@@ -102,7 +133,7 @@ public class SessionStore {
     }
 
     public void create(String id) {
-        this.createAt(id, Clock.millisTime());
+        this.createAt(id, this.clock.now());
     }
 
     /**
@@ -130,7 +161,7 @@ public class SessionStore {
     }
 
     public ScopeMap resolve(String id) {
-        return this.resolveAt(id, Clock.millisTime());
+        return this.resolveAt(id, this.clock.now());
     }
 
     /** Whether a live (non-expired) session exists for `id`. Refreshes idle. */
@@ -191,7 +222,7 @@ public class SessionStore {
     }
 
     public int32 evictExpired() {
-        return this.evictExpiredAt(Clock.millisTime());
+        return this.evictExpiredAt(this.clock.now());
     }
 
     /** Number of sessions currently held (live or not-yet-swept expired). */

@@ -76,6 +76,24 @@ public class SessionScope {
         return SessionScope.STORE.invalidateAll();
     }
 
+    /**
+     * Install `clock` (borrowed) as the ambient store's time source — the R1
+     * test seam for driving session expiry deterministically on the ambient
+     * path. The caller OWNS `clock` and must keep it alive until
+     * `useSystemClock()` (or `PrimaveraTest.reset()`) restores the default,
+     * before it drops.
+     */
+    public static void useManualClock(ManualTimeSource clock) {
+        SessionScope.ensure();
+        SessionScope.STORE.setTimeSource(clock);
+    }
+
+    /** Restore the ambient store's default (system) clock. */
+    public static void useSystemClock() {
+        SessionScope.ensure();
+        SessionScope.STORE.setTimeSource(SessionStore.systemSource());
+    }
+
     /** Number of sessions currently in the store. */
     public static int32 sessionCount() {
         SessionScope.ensure();

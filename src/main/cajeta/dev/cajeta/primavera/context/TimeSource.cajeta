@@ -1,0 +1,18 @@
+package dev.cajeta.primavera.context;
+
+/**
+ * The wall-clock seam a {@Link SessionStore} reads time through — the one
+ * "singleton-scoped collaborator" that TTL expiry depends on. Production
+ * uses {@Link SystemTimeSource} (the real clock); a test installs a
+ * {@Link ManualTimeSource} so expiry is deterministic on the AMBIENT
+ * SessionScope path, not just via the store's explicit `...At(now)` forms.
+ *
+ * The store BORROWS its source (the installer owns it), matching the
+ * Logger↔Appender lifetime contract: the borrow must outlive the store's
+ * use of it, which the test guarantees by restoring the system source
+ * (via PrimaveraTest.reset) before its ManualTimeSource drops.
+ */
+public interface TimeSource {
+    /** Current wall-clock time in milliseconds. */
+    public int64 now();
+}

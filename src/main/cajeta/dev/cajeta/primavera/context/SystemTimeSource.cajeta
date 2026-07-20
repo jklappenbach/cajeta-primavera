@@ -1,0 +1,10 @@
+package dev.cajeta.primavera.context;
+
+import cajeta.time.Clock;
+
+/** The production {@Link TimeSource}: the real monotonic wall clock. */
+public class SystemTimeSource implements TimeSource {
+    public int64 now() {
+        return Clock.millisTime();
+    }
+}
