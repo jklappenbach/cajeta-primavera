@@ -270,6 +270,29 @@ Compile-time-resolved authn/authz; no reflective security. A
 unified with the **Principal scope** (`docs/Connections.md`): the
 authenticated identity IS the principal-scope key.
 
+**Design stance (from `docs/CompetitiveLessons.md`, a verified survey of
+Spring Security / ASP.NET Core / Django CVEs).** The dominant failure class
+across all three is security assembled at runtime from ordered chains
+(filter order, middleware registration order, MIDDLEWARE lists) with
+string-based path matching — producing authorization-bypass CVEs at the
+seams between independently-configured subsystems, documented but never
+compile-enforced. primavera's differentiating commitments, in priority
+order: **(1)** pipeline stage-ordering (context→authn→authz) is a
+type-checked composition — misordering fails compilation, not production;
+**(2)** authz rules reference **typed route/handler identities**, never
+context-interpreted strings (Spring CVE-2023-34035 class); **(3)** paths are
+normalized **once, before any security decision**, with build-time coverage
+that every reachable handler has a rule (CVE-2024-38821 class); **(4)**
+default-closed is **uniform** — no exempt request class, static assets
+included (ASP.NET `wwwroot` class); **(5)** production profiles default
+**secure** (secure cookies, HSTS, HTTPS-redirect on; dev relaxation
+explicit), inverting Django's opt-in posture; **(6)** security-relevant
+comparison is locale-independent by construction (CVE-2024-38827 class). The
+authz model is a **single default-closed policy algebra** with typed AND/OR/
+veto combinators (improving on ASP.NET's policy model); CSRF adopts Django's
+rotation+masking+Origin design with a grace-window fix for its stale-token
+DX cost.
+
 ### 8.1 Protocol coverage matrix
 
 The commitment: the protocols in current mainstream use are all ON the
