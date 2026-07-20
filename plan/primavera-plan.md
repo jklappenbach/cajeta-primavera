@@ -170,7 +170,16 @@ Compiler/runtime findings hit while building this (upstream, cajeta-two):
 6. **Transferring a `FiberContext` through `Channel`/`Optional` slots
    SIGSEGVs in the receiving fiber** (double claim of the snapshot's
    ownership) — worked around by holding the snapshot in an owned static and
-   signaling rendezvous over `Channel<int32>`.
+   signaling rendezvous over `Channel<int32>`. (Spec+plan filed in cajeta-two:
+   `specs/channel-ownership-spec.md`.)
+7. **An interface-typed `== null` compare crashes the compiler**
+   (2026-07-19): `static TimeSource SYSTEM; if (SYSTEM == null)` aborts codegen
+   with an LLVM `ICmpInst::AssertOK` "operands not the same type" assertion —
+   the interface fat-pointer is compared against a single null word. Class-typed
+   null compares are fine (`RequestScope.SCOPE`). Worked around by holding the
+   lazy static as the CONCRETE `SystemTimeSource` and upcasting to the interface
+   only at the borrow-store. cajeta-two fix: lower interface `== null` to a
+   data-pointer-only compare.
 
 ## Cross-cutting cleanups
 

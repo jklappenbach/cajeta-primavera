@@ -405,8 +405,14 @@ ORM with NoSQL bolted on.
 
 Full model: [`Testing.md`](../Testing.md). Four override layers (`@TestComponent`
 compile-time swap ✅; direct construction ✅; `@Mock` codegen planned; the core
-`@Inject` override seam shipped in stdlib), plus `withRequestScope` seeding and
-running a handler under either executor. Built on
+`@Inject` override seam shipped in stdlib), plus the shipped `PrimaveraTest`
+harness (✅ request/session scope seeding, the completion-port handoff
+simulation, and — R1, per `CompetitiveLessons.md` — an injectable
+`TimeSource` so session expiry is deterministic on the **ambient** path, not
+just the store's `...At(now)` forms). Test-double injection into the frozen
+graph is *seeding* (put the double in the scope under the real key; the
+scope get-or-create short-circuits the real factory) — no per-test graph
+regeneration, no scope-class exclusions. Built on
 [cajeta-unit](https://github.com/jklappenbach/cajeta-unit).
 
 ## 15. Deliberately ceded (not primavera's lane)
@@ -426,6 +432,38 @@ adapters). Rationale: [`EnterpriseFrameworkLandscape.md`](EnterpriseFrameworkLan
 - ✅ **Data depth** — **multi-store generated repos + typed access** (SQL/Dynamo/Redis
   dialects); managed ORM is precluded by the model, not a depth knob (§11, `Data.md`).
 
+**Decided (2026-07 — DI posture, from the compile-time-DI survey
+`docs/CompetitiveLessons.md` Part 2).** The survey settled what a
+compile-time-DI framework gives up vs. the reflective incumbents; most losses
+are *free* for primavera (already forbidden by ownership/zero-reflection/DCE).
+The three that needed a call:
+- ✅ **Runtime conditional wiring is split, not banned (R2).** Which
+  implementations *exist* (graph **shape**) is a **build-time** decision —
+  deployment profiles (§3.6) and the `@Profile`/seam mechanism. Which
+  compiled-in implementation a request *uses* (value **selection**) is a
+  **runtime** decision expressed as ordinary strategy-selection over the
+  DI-provided set — so **multibinding (`@Inject List<A>`) is decided IN** as
+  the load-bearing primitive (this closes half of former open-#3). There is
+  **no** runtime graph mutation / runtime `@ConditionalOnX`. (Open residue:
+  is there an enterprise case needing runtime graph-*shape* change that
+  strategy-selection can't serve? — tracked, none found so far.)
+- ✅ **Extensions are build-time only (R3).** Third-party capability arrives
+  as a **compiled dependency wired into the graph at build** (the
+  annotation-processing/codegen seam the plan reserves), never a
+  runtime-registered bean. "No runtime plugin registration" is a **documented
+  posture**, consistent with DCE/embedded — not a gap to close.
+- ✅ **Programmatic lookup is scoped-only.** The sanctioned form is the
+  scope get-or-create (`materialize`/`lookup`, §3); there is **no**
+  `CDI.current()`-style ambient global lookup — which also kills the
+  DCE-false-positive class (a bean is never retained just because a runtime
+  lookup *might* want it; reachability is from typed injection sites).
+- ✅ **Introspection is compile-time-generated, not reflective (obligation,
+  not option).** With zero runtime reflection there is no fallback, so every
+  place the spec assumes introspection — serde, config binding (§4),
+  repository/`@Entity` mapping (§11) — MUST have an AoT codegen story.
+  *Audit item:* confirm each has one; the payoff is the incumbents' worst DX
+  tax (GraalVM reachability-metadata upkeep) simply not existing.
+
 **Still open:**
 1. **Seam defaults** — which one adapter ships in-tree per seam (Redis for cache,
    env for secrets, …) so each capability is usable out of the box.
@@ -433,5 +471,6 @@ adapters). Rationale: [`EnterpriseFrameworkLandscape.md`](EnterpriseFrameworkLan
    component-level **default scope** that sites may override (legibility vs
    site-flexibility).
 3. **`@Primary`** — keep the implicit "unqualified component is the default", or add
-   an explicit `@Primary`? And **multibinding** (`@Inject List<A>`) for plugin sets.
+   an explicit `@Primary`? (Multibinding, formerly bundled here, is now **decided in**
+   above as the R2 selection primitive.)
 4. **Data adapter lifecycle** & single-table depth & `@Scan` ergonomics — see `Data.md`.
