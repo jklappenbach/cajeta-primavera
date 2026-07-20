@@ -167,6 +167,140 @@ escape-hatch-typing defaults.
    partial attempts (Spring's runtime ambiguity exception, ASP.NET's ASP0001
    analyzer, fallback-policy patterns) fallen short?
 
+---
+
+# Part 2 — Compile-time DI: what you give up (and what's free)
+
+Second verified survey (2026-07-19) of what Micronaut, Quarkus/ArC,
+Dagger-Hilt, and Spring-AOT/GraalVM concretely **sacrificed** by moving DI
+from runtime reflection to build-time codegen — and which sacrifices bite
+primavera given its constraints. Facts are 3-0 unanimous against primary
+sources (GraalVM reference manual, Quarkus guides, Dagger/Hilt dev guides);
+the FREE-vs-REAL mapping is *reasoned synthesis, not source-asserted* — treat
+it as a recommendation.
+
+> **Scope honesty.** The surviving evidence skews to **GraalVM + Quarkus +
+> Dagger/Hilt**. Micronaut's `BeanDefinition` model and Spring-AOT's
+> `BeanFactoryInitializationAotProcessor` were in the brief but produced no
+> primary-sourced surviving claims — their specifics are inferred by analogy
+> and should be confirmed before relying on them. Hot-reload and
+> generated-code-debugging DX costs are under-evidenced here.
+
+## The headline: most of the cost is already sunk
+
+Every compile-time-DI sacrifice traces to **one** root — GraalVM's
+closed-world assumption (all reachable code known at build time; no runtime
+bytecode/class loading; unreached code DCE'd) plus each framework's
+build-time graph freeze. [GraalVM metadata][g1], [Quarkus native tips][qn]
+The decisive result for primavera: **most of these sacrifices are FREE** — a
+borrow-checked, zero-reflection, fibers-only, DCE-for-embedded language was
+never going to support the dynamic patterns being given up, so it inherits
+the wins (fast startup, small image, **no reflection attack surface**)
+without a real loss.
+
+### Free sacrifices (primavera loses nothing — it forbade these already)
+
+| Sacrificed capability | Why it's free for primavera |
+|---|---|
+| **Runtime class loading / closed-world** | Embedded + DCE targets *demand* closed-world; it's the goal, not a cost. [GraalVM compat][g2] |
+| **Reflective interop** (serialization, reflective frameworks) | Zero runtime reflection by design. [GraalVM reflection][g3] |
+| **Reachability-metadata maintenance burden** (hand-written JSON per app *and* per dependency — GraalVM's most-cited DX pain, severe enough to spawn a shared-metadata repo) | *Zero* — nothing to declare if there's no reflection. This is a **strategic win**, not a wash: the incumbents' worst DX tax simply doesn't exist. [GraalVM shared metadata][gm] |
+| **Runtime dynamic proxies** | Fibers-only async already rules out the async/lazy-proxy patterns; ownership resists proxy-wrapper aliasing. [GraalVM proxy][g4] |
+
+### The one corollary OBLIGATION the free list creates
+
+Because primavera **cannot fall back on reflection**, it must **generate
+serialization/introspection at compile time** — exactly what Micronaut
+(`@Introspected`) and Quarkus do. This is not optional: it's the price of
+the zero-reflection win, and it's already implied by the Data spec's
+"AoT-generated binders, no reflection" and the config spec's generated
+binders. Flag: audit that every place the spec assumes introspection (serde,
+config binding, repository mapping, `@Entity` field access) has a
+compile-time generation story, since there is no runtime escape hatch.
+
+## The three REAL sacrifices (each needs a design answer)
+
+The AOT frameworks already proved the recovery patterns; primavera should
+adopt the *better* of each.
+
+### R1. Test-double injection into a frozen graph — the deepest one
+Every framework built explicit machinery because the graph is fixed at build
+time. Dagger uses a **separate per-environment test component** that installs
+fake modules, and **forbids** `@Provides` override via subclassing (brittle,
+can't change graph shape). Hilt adds `@BindValue`, `@UninstallModules`,
+`@TestInstallIn`. Quarkus adds `QuarkusMock`/`@InjectMock`. But the recovery
+stays **awkward in version-specific ways**: `QuarkusMock` can't mock
+`@Singleton`/`@Dependent` (only normal-scoped) beans; Hilt's per-test
+overrides regenerate a whole component and hurt build speed; DCE causes
+false-positive wiring failures (Quarkus ArC removes unused beans and "can't
+detect programmatic lookup via `CDI.current()`", forcing `@Unremovable`).
+[Dagger testing][dt], [Hilt testing][ht], [Quarkus mocking][qm]
+
+> **primavera answer.** We already shipped the seam: **seed the scope with
+> the double under the real key before the code under test runs**
+> (`PrimaveraTest.request`/`freshSession` + `RequestScope.store`;
+> `materialize`'s has-check short-circuits the real factory), plus
+> cajeta-unit `TestContext` for `@Inject` overrides. This sidesteps the
+> incumbents' worst problems by construction: no graph regeneration per test
+> (scopes are runtime stores, not build-frozen components → no Hilt-style
+> build-speed hit), and **no scope-class exclusions** (the ownership model
+> makes any scoped bean seedable, dodging QuarkusMock's `@Singleton` gap).
+> The design task remaining: a first-class override API over `TestContext`
+> for *singleton*-scoped collaborators, and DCE must not remove a bean solely
+> because only tests inject it (the ArC false-positive class — our
+> reflection-registry-free model may avoid it, but verify).
+
+### R2. Runtime conditional / environment-varying wiring
+Classic DI decided `@ConditionalOnX` at runtime; AOT frameworks resolve
+conditions at **build time**. Quarkus's `@IfBuildProfile`/`@IfBuildProperty`
+have "absolutely no effect" from runtime profile/property changes.
+[Quarkus CDI][qc] This is REAL: an enterprise app that picks an
+implementation from a runtime env var expects that to work.
+
+> **primavera answer.** Split the concern the incumbents conflate.
+> **Graph shape** (which implementations exist) is a build-time decision —
+> deployment profiles (§3.6), the `@Profile`/seam mechanism we already use
+> for logging appenders. **Value selection** (which of the compiled-in
+> implementations a request uses) is a runtime decision expressed as
+> ordinary strategy-selection over the DI-provided set (`@Inject List<A>`
+> multibinding + a runtime selector), **not** as graph mutation. Open
+> question the spec should resolve: is there a residuum of genuinely
+> runtime-*shape* needs that this can't serve? (research open-Q).
+
+### R3. Plugin / runtime-extension architectures
+CDI Portable Extensions (the runtime SPI for third parties to register
+beans) "cannot be supported" under build-time DI and must be reimplemented
+as **build-time extensions**; no bytecode-loading-at-runtime plugin system
+works under closed-world. [Quarkus CDI][qc], [GraalVM compat][g2] Partly
+mitigated by primavera's own constraints (a plugin that ships owned,
+borrow-checked code can't be loaded from bytecode at runtime anyway).
+
+> **primavera answer.** Build-time extension points only — the
+> annotation-processing/codegen seam the plan already reserves ("lets
+> primavera or any framework plug its policy into the compiler"). Third-party
+> capability arrives as a **compiled dependency wired into the graph at
+> build**, not a runtime-registered bean. This is a real constraint to
+> *document as a boundary*, not a gap to close: "no runtime plugin
+> registration" is a deliberate posture, consistent with DCE/embedded.
+
+## Where compile-time DI clearly WON (keep these as the payoff)
+Fast startup, low memory, small native-image size, and — most relevant to
+Part 1 — a **near-zero reflection attack surface**. primavera gets all four
+by construction; Part 1's security argument and Part 2's zero-metadata win
+are the same property viewed from two sides.
+
+## Open questions (unverified)
+1. Micronaut `@Introspected` / Spring-AOT introspection APIs vs. what
+   primavera needs for reflection-free serde — confirm from primary sources.
+2. Quantify the WIN magnitude (startup ms, RSS, image bytes) so the payoff is
+   measured, not just asserted.
+3. Forbid programmatic bean lookup (`CDI.current()`-style) outright — which
+   kills the DCE false-positive class — or allow it with explicit
+   reachability marking? (We already have `materialize`/`lookup`, a *scoped*
+   programmatic lookup — decide whether that's the only sanctioned form.)
+4. Is there an enterprise use case needing runtime graph-*shape* decisions
+   that R2's strategy-selection genuinely cannot serve?
+
 [sa]: https://docs.spring.io/spring-security/reference/servlet/architecture.html
 [am]: https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/?view=aspnetcore-10.0
 [dm]: https://docs.djangoproject.com/en/6.0/ref/middleware/
@@ -177,3 +311,13 @@ escape-hatch-typing defaults.
 [ap]: https://learn.microsoft.com/en-us/aspnet/core/security/authorization/policies?view=aspnetcore-10.0
 [dc]: https://docs.djangoproject.com/en/6.0/ref/csrf/
 [dsec]: https://docs.djangoproject.com/en/6.0/topics/security/
+[g1]: https://www.graalvm.org/latest/reference-manual/native-image/metadata/
+[g2]: https://www.graalvm.org/latest/reference-manual/native-image/metadata/Compatibility/
+[g3]: https://www.graalvm.org/jdk21/reference-manual/native-image/dynamic-features/Reflection/
+[g4]: https://www.graalvm.org/22.1/reference-manual/native-image/DynamicProxy/
+[gm]: https://medium.com/graalvm/enhancing-3rd-party-library-support-in-graalvm-native-image-with-shared-metadata-9eeae1651da4
+[qn]: https://quarkus.io/guides/writing-native-applications-tips
+[qc]: https://quarkus.io/guides/cdi-reference
+[qm]: https://quarkus.io/blog/mocking/
+[dt]: https://dagger.dev/dev-guide/testing.html
+[ht]: https://dagger.dev/hilt/testing.html
