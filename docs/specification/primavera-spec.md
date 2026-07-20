@@ -265,17 +265,54 @@ stacking.
 
 ## 8. Security — **per spec**
 
-Compile-time-resolved authn/authz; no reflective security.
+Compile-time-resolved authn/authz; no reflective security. A
+`SecurityContext` rides `FiberLocal` (request principal, claims, roles),
+unified with the **Principal scope** (`docs/Connections.md`): the
+authenticated identity IS the principal-scope key.
 
-- **AuthN** — JWT/OIDC resource-server first (validate bearer tokens, extract
-  claims); mTLS and API-key/basic as Tier-2; SAML/LDAP deferred. A `SecurityContext`
-  rides `FiberLocal` (request principal, roles).
-- **AuthZ** — method security as aspect advice: `@Secured`, `@RolesAllowed("admin")`,
-  `@PreAuthorize(expr)`; ABAC/policy-engine deferred.
-- **Web filters** — CORS, CSRF, security headers as cajeta-http middleware (§6).
+### 8.1 Protocol coverage matrix
+
+The commitment: the protocols in current mainstream use are all ON the
+matrix — nothing popular is architecturally excluded — tiered by
+dependency, not by whim. (Stdlib-crypto column: what `cajeta.hash` /
+future `cajeta.crypto` must provide; web column: needs cajeta-http.)
+
+| Protocol / standard | Tier | Needs crypto | Needs web |
+|---|---|---|---|
+| **JWT bearer validation** (JWS: HS256 → RS256/ES256/EdDSA) | **1 — core** | HMAC-SHA256 now; RSA/P-256/Ed25519 verify next | no (tokens are just strings) |
+| **OAuth 2.1 resource server** (Bearer RFC 6750; JWT or opaque via introspection RFC 7662) | **1 — core** | as JWT row | introspection needs the outbound client |
+| **OIDC resource side** (discovery RFC 8414, JWKS RFC 7517, ID-token validation) | **1 — core** | asymmetric verify | JWKS/discovery fetch |
+| **Session-cookie auth** (login sessions over §3.4 SessionStore; CSPRNG ids, rotation-on-login, idle+absolute TTL) | **1 — core** | CSPRNG (stdlib gap: `math.random` is seeded Philox, not secure) | cookie handling |
+| **OAuth 2.1 client** (client_credentials for service-to-service; auth-code+**PKCE** for user flows — implicit/password grants are dead and stay dead) | **2** | SHA-256 (have) | yes (outbound + callback) |
+| **Passkeys / WebAuthn (FIDO2)** — server-side registration + assertion verification; the mainstream first-party login of 2026 | **2** | ES256/EdDSA verify + COSE/CBOR codec | yes (browser flow) |
+| **mTLS / client-cert authn** (incl. SPIFFE-style service identity) | **2** | in stdlib TLS already; needs peer-cert exposure from `cajeta.io.net.tls` | no |
+| **API keys / HTTP Basic** | **2** | constant-time compare | header extraction |
+| **DPoP** (RFC 9449 sender-constrained tokens) | **3** | as JWT row | yes |
+| **Token revocation** (RFC 7009) / **SCIM** provisioning | **3 — adapter** | — | yes |
+| **SAML 2.0**, **LDAP/Kerberos** | **deferred** — enterprise adapters (`primavera-security-saml`), demand-driven | XML-DSig / GSSAPI | yes |
+| PASETO | non-goal unless demanded (JWT's niche competitor) | — | — |
+
+### 8.2 The layers
+
+- **AuthN seams** — `Authenticator` (credentials → principal) and
+  `TokenValidator` (token → claims), deterministic-testable http-free; the
+  web boundary (Phase 4) only *extracts* credentials and delegates.
+- **AuthZ** — runtime guard API first (`Security.require(role)`,
+  `hasRole`, predicate guards as closures), which `@Secured` /
+  `@RolesAllowed("admin")` compile down to when annotation wiring lands
+  (the §3 materialize/lookup precedent). `@PreAuthorize(expr)` deferred
+  behind an expression-language decision; ABAC / policy engines (OPA,
+  Zanzibar-style ReBAC) as a `PolicyEngine` adapter seam, deferred.
+- **Web filters** — CORS, CSRF, security headers as cajeta-http middleware
+  (§6); CSRF weight depends on the session-vs-token default posture
+  (§16 open decision).
 - **Secrets** — the `SecretSource` seam (§4).
-- **Crypto primitives** are **not** primavera's — they belong in stdlib
-  (`cajeta.hash` / a future `cajeta.crypto`); primavera consumes them.
+- **Crypto primitives are NOT primavera's** — they belong in stdlib.
+  Concrete asks for cajeta-two, in priority order: **HMAC-SHA256** (~small,
+  unlocks HS256 + cookie signing), **CSPRNG** (getrandom-backed; session
+  ids, CSRF tokens), **constant-time compare**; then `cajeta.crypto`
+  asymmetric verify (RSA-PSS/PKCS1, ECDSA P-256, Ed25519) and a COSE/CBOR
+  codec (WebAuthn). Primavera consumes, never implements.
 
 ## 9. Outbound clients — **per spec** (over cajeta-http)
 
