@@ -83,7 +83,8 @@ the **available methods/annotations are store-appropriate, compile-time-enforced
    for *dynamic* (runtime-varying) queries only. Lightweight, type-safe — not the
    JPA-Criteria monster.
 
-Results are **owned** (`#Order` / `List<#Order>`); the caller owns and drops them.
+Results are **owned** — the query surrenders them at the call site, and the caller
+owns and drops them.
 No identity map, no first-level cache (the managed-ORM features the model rules out).
 **Projections** map a query to a partial DTO with its own generated mapper.
 
