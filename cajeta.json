@@ -46,8 +46,8 @@
         // selftest that imports it compiles as part of src/main (no separate
         // test source root yet). Move it back when either lands.
         "dependencies": {
-            "dev.cajeta.logging": "0.5.*",
-            "dev.cajeta.unit":    "0.1.*"
+            "dev.cajeta.logging": "0.8.*",
+            "dev.cajeta.unit":    "0.3.*"
         },
 
         "dev-dependencies": {},
