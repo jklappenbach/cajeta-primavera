@@ -2,17 +2,39 @@ name: release
 
 on:
   push:
-    tags: ['v*']
-  pull_request:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
   contents: write
 
-# Builds the library .cja on every PR; on a v* tag also publishes a GitHub
-# Release and a signed publish to Olla. Logic lives in the reusable workflow.
+# Builds + tests the library on a main push; on a v* tag also publishes a
+# GitHub Release and a signed publish to Olla. Logic lives in the reusable
+# workflow. No `pull_request:` trigger by design — changes land by pushing
+# straight to main, so a PR trigger would never fire. This workflow used to
+# have the opposite pair (pull_request but no main push), so nothing ran.
 jobs:
   release:
     uses: jklappenbach/cajeta/.github/workflows/lib-release.yml@main
+    with:
+      # Pin explicitly. Omitting this inherits the reusable workflow's own
+      # default, which is v0.19.1 — this repo was inheriting it, and a first
+      # publish would have been built by a toolchain eleven minors behind the
+      # one the sources were written against.
+      #
+      # v0.29.0 is the newest release and the version this package's first cut
+      # was gated against: `cajeta test` reports 15 passed, 0 failed, 0 skipped
+      # from a cleared artifact cache.
+      #
+      # The pin is not what makes the ownership diagnostics appear, and the
+      # comment should not claim it is. CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER
+      # and CAJETA_ERROR_CAPTURED_BORROW_PARAM both shipped in v0.21.0 (cajeta
+      # aa382ae0 and efa2a01a, confirmed with `git log -S` and
+      # `git tag --contains`). What hid them here was the manifest's stale
+      # toolchain pin of 0.9.2, which no release ever carried.
+      cajeta-version: v0.29.0
+      # The manifest's `test` task builds with `"profile": "test"` and runs the
+      # result, so the suite is self-contained and CI can call it directly.
+      test-command: cajeta test
     secrets: inherit

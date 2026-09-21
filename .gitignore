@@ -5,3 +5,6 @@ gen/
 *.exe
 .cajeta/
 app.jsonl
+
+# Repo-local scratch for gate logs and probes (standing constraint: never /tmp).
+tmp/
