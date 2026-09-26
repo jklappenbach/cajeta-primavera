@@ -101,8 +101,5 @@ defers invalidation to request end.
 
 ## v1 limitations
 
-- **First-touch race** on the lazy static init (`STORE`, `ID`) — shared with
-  `RequestScope.SCOPE`; benign on the single-carrier cooperative scheduler,
-  wrong under multi-carrier parallelism. Tracked in `plan/primavera-plan.md`.
 - **Invalidate-while-in-use** is caller-coordinated (above).
 - **Sweep scheduling** is manual until the Phase-4 executor exists.

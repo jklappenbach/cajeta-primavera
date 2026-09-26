@@ -9,6 +9,7 @@ import dev.cajeta.primavera.test.PrimaveraTest;
 import dev.cajeta.primavera.test.TrackedBean;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.unit.TestRunner;
+import cajeta.concurrent.AtomicInt32;
 
 /**
  * primavera's runtime self-test, on cajeta-unit's TestRunner — request scope
@@ -30,6 +31,8 @@ import dev.cajeta.unit.TestRunner;
  */
 public class SelfTest {
     static int32 factoryCalls;
+    static AtomicInt32 firstTouchTags = heap AtomicInt32(0);
+    static AtomicInt32 firstTouchHits = heap AtomicInt32(0);
 
     // Probe-worker observations (reset before each handoff/inherit test).
     static boolean workerSawScope;
@@ -291,6 +294,45 @@ public class SelfTest {
         }
     }
 
+    static async void firstTouchProbe() {
+        int32 tag = SelfTest.firstTouchTags.fetchAdd(1) + 100;
+        PrimaveraTest.request(() -> {
+            TrackedBean mine = heap TrackedBean(tag);
+            RequestScope.store("dev.cajeta.primavera.test.TrackedBean", #mine);
+            Object got = RequestScope.lookup("dev.cajeta.primavera.test.TrackedBean");
+            if (got != null) {
+                TrackedBean tb = (TrackedBean) got;
+                if (tb.tag == tag) { SelfTest.firstTouchHits.fetchAdd(1); }
+            }
+        });
+        String sid = "first-touch-" + tag;
+        SessionScope.create(sid);
+        SessionScope.attach(sid, () -> {
+            TrackedBean mine = heap TrackedBean(tag);
+            SessionScope.store("dev.cajeta.primavera.test.TrackedBean", #mine);
+            Object got = SessionScope.lookup("dev.cajeta.primavera.test.TrackedBean");
+            if (got != null) {
+                TrackedBean tb = (TrackedBean) got;
+                if (tb.tag == tag) { SelfTest.firstTouchHits.fetchAdd(1); }
+            }
+        });
+        SessionScope.invalidate(sid);
+    }
+
+    static void addFirstTouchTests(TestRunner t) {
+        t.test("first touch of both scopes from eight parallel fibers", () -> {
+            TrackedBean.resetDrops();
+            SelfTest.firstTouchHits.store(0);
+            scope {
+                for (int32 i = 0; i < 8; i = i + 1) {
+                    spawn firstTouchProbe();
+                }
+            }
+            SelfTest.req(SelfTest.firstTouchHits.load() == 16, "every fiber saw its own bean in both scopes");
+            SelfTest.req(TrackedBean.drops == 16, "every request bag and session bag dropped");
+        });
+    }
+
     static async void unrelatedWorkerProbe() {
         SelfTest.workerSawScope = RequestScope.isActive();
     }
@@ -356,6 +398,7 @@ public class SelfTest {
         System.stdout.println("== primavera self-tests ==");
         TestRunner t = heap TestRunner();
 
+        SelfTest.addFirstTouchTests(t);
         SelfTest.addRequestScopeTests(t);
         SelfTest.addSessionStoreTests(t);
         SelfTest.addSessionScopeTests(t);

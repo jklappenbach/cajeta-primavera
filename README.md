@@ -22,12 +22,12 @@ patterns.
 |---|---|
 | **Request scope** over `FiberLocal` (`RequestScope`, `ScopeMap`) | ✅ built, self-tested |
 | DI substrate (`@Component` / `@Inject` / `@Factory` / aspects) | ↳ **core stdlib** — primavera consumes it (`docs/specification/lang/AspectModel.md`); not owned here |
-| Session scope (`SessionScope` + a session store) | ▢ designed, next increment |
-| Web request/session model + `@RestServer` (policy over [cajeta-http](https://github.com/jklappenbach/cajeta-http)) | ▢ planned |
+| Session scope (`SessionScope` + a session store) | ✅ built, self-tested |
+| Web request/session model (policy over [cajeta-http](https://github.com/jklappenbach/cajeta-http)) | ▢ in progress, `primavera-web` spec and plan in the cajeta repo |
 | Stereotypes (`@Repository` / `@Service`) + deployment `@Profile` | ▢ planned (policy over the core substrate) |
-| primavera-side unit-test helpers (mock `@Request`/`@Session`, both executors) | ▢ planned (builds on [cajeta-unit](https://github.com/jklappenbach/cajeta-unit)) |
+| primavera-side unit-test helpers (`PrimaveraTest`, both executors) | ✅ built, self-tested (on [cajeta-unit](https://github.com/jklappenbach/cajeta-unit)) |
 
-See [`plan/primavera-plan.md`](plan/primavera-plan.md) for the roadmap.
+See [`plan/README.md`](plan/README.md) for where the roadmap lives.
 
 ## Request scope
 
@@ -82,7 +82,7 @@ cajeta test     # build + run the runtime self-tests (fails the build on any fai
 - [`docs/Factory.md`](docs/Factory.md) — `@Factory` design rationale (normative spec is the stdlib): third-party types, assisted args, init-beyond-ctor.
 - [`docs/Testing.md`](docs/Testing.md) — how DI overrides work under test: the four override layers + scope seeding.
 - [`docs/specification/EnterpriseFrameworkLandscape.md`](docs/specification/EnterpriseFrameworkLandscape.md) — comparative analysis of Spring & competitors; what primavera takes on, defers, or cedes.
-- [`plan/primavera-plan.md`](plan/primavera-plan.md) — roadmap.
+- [`plan/README.md`](plan/README.md) — where the roadmap lives.
 
 ## License
 

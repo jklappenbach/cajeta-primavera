@@ -27,52 +27,34 @@ import cajeta.concurrent.FiberLocal;
  * beans — only `invalidate`, TTL expiry, or store teardown does.
  */
 public class SessionScope {
-    // Process-wide session store + the per-request id binding. Both are
-    // lazily constructed owned statics (see RequestScope.SCOPE for the
-    // pattern and the v1 first-touch-race caveat); accessors dispatch on
-    // the fields directly and never hand the statics out.
-    static SessionStore STORE;
-    static FiberLocal<String> ID;
-
-    static void ensure() {
-        if (SessionScope.STORE == null) {
-            SessionStore createdStore = heap SessionStore();
-            SessionScope.STORE = #createdStore;
-        }
-        if (SessionScope.ID == null) {
-            FiberLocal<String> createdId = heap FiberLocal<String>();
-            SessionScope.ID = #createdId;
-        }
-    }
+    // Process-wide session store and the per-request id binding. Owned
+    // statics, never handed out (see RequestScope.SCOPE).
+    static SessionStore STORE = heap SessionStore();
+    static FiberLocal<String> ID = heap FiberLocal<String>();
 
     /** Set the store's TTLs: idle and absolute, in millis, 0 disables. */
     public static void configure(int64 idleTtlMillis, int64 absoluteTtlMillis) {
-        SessionScope.ensure();
         SessionScope.STORE.setIdleTtl(idleTtlMillis);
         SessionScope.STORE.setAbsoluteTtl(absoluteTtlMillis);
     }
 
     /** Create (or displace) the session under `sessionId` — e.g. at login. */
     public static void create(String sessionId) {
-        SessionScope.ensure();
         SessionScope.STORE.create(sessionId);
     }
 
     /** Drop the session under `sessionId` and all its beans — e.g. at logout. */
     public static void invalidate(String sessionId) {
-        SessionScope.ensure();
         SessionScope.STORE.invalidate(sessionId);
     }
 
     /** Sweep expired sessions from the store; returns the number evicted. */
     public static int32 evictExpired() {
-        SessionScope.ensure();
         return SessionScope.STORE.evictExpired();
     }
 
     /** Drop every session ("log everyone out"). Returns the number dropped. */
     public static int32 invalidateAll() {
-        SessionScope.ensure();
         return SessionScope.STORE.invalidateAll();
     }
 
@@ -84,19 +66,16 @@ public class SessionScope {
      * before it drops.
      */
     public static void useManualClock(ManualTimeSource clock) {
-        SessionScope.ensure();
         SessionScope.STORE.setTimeSource(clock);
     }
 
     /** Restore the ambient store's default (system) clock. */
     public static void useSystemClock() {
-        SessionScope.ensure();
         SessionScope.STORE.setTimeSource(SessionStore.systemSource());
     }
 
     /** Number of sessions currently in the store. */
     public static int32 sessionCount() {
-        SessionScope.ensure();
         return SessionScope.STORE.count();
     }
 
@@ -106,7 +85,6 @@ public class SessionScope {
      * caller's string is only borrowed for this call.
      */
     public static void attach(String sessionId, () -> void body) {
-        SessionScope.ensure();
         String owned #= sessionId.substring(0, sessionId.byteLength());
         SessionScope.ID.where(#owned, body);
     }
@@ -116,7 +94,6 @@ public class SessionScope {
      * holds a live (non-expired) session for it.
      */
     public static boolean isActive() {
-        SessionScope.ensure();
         if (SessionScope.ID.isBound() == false) {
             return false;
         }
@@ -127,7 +104,6 @@ public class SessionScope {
     // session is gone/expired. Each access resolves id -> store fresh (and
     // refreshes the idle clock) — the bag is never cached in the request.
     static ScopeMap bag() {
-        SessionScope.ensure();
         if (SessionScope.ID.isBound() == false) {
             return null;
         }
