@@ -1,0 +1,26 @@
+package dev.cajeta.primavera.pipeline;
+
+import cajeta.io.net.ByteBuffer;
+
+/**
+ * The buffer a stage receives and returns (primavera-web spec §7.10, §7.15).
+ * Only {@link BufferSource} constructs one, so every buffer in flight came
+ * from the pool and goes back to it. Stages borrow, the pipeline owns.
+ */
+public final class Buffer {
+
+    ByteBuffer inner;
+    int32 serial;
+
+    Buffer(#ByteBuffer inner, int32 serial) {
+        this.inner #= inner;
+        this.serial = serial;
+        return;
+    }
+
+    /** The bytes, a borrow; cursors and contents are the stage's to move. */
+    public ByteBuffer bytes() { return this.inner; }
+
+    /** Identity within its source, for telling a returned buffer from the one handed in. */
+    public int32 id() { return this.serial; }
+}

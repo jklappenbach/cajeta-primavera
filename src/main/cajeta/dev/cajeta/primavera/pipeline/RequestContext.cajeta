@@ -1,0 +1,77 @@
+package dev.cajeta.primavera.pipeline;
+
+import cajeta.collection.ArrayList;
+
+/**
+ * One request's ledger (primavera-web spec §7.10 to §7.13): every buffer a
+ * stage takes is recorded here and goes back to the source when the
+ * pipeline releases it or {@link #close} runs, so a stage that throws after
+ * taking leaks nothing. The response status lives here too. Request-scoped
+ * state a stage learns belongs in the DI scopes, not in this object.
+ */
+public final class RequestContext {
+
+    BufferSource source;
+    ArrayList<Buffer> ledger;
+    int32 statusCode;
+    boolean hasResponded;
+
+    public RequestContext(BufferSource source) {
+        this.source #= source;
+        this.ledger = heap ArrayList<Buffer>();
+        this.statusCode = 200;
+        this.hasResponded = false;
+        return;
+    }
+
+    /** A fresh buffer from the source, owned by this ledger; the stage borrows it. */
+    public Buffer take() {
+        Buffer fresh #= this.source.take();
+        this.ledger.add(#fresh);
+        Buffer got = this.ledger.get(this.ledger.count() - 1);
+        return #= got;
+    }
+
+    /** Record a buffer the caller hands in, the request's input. */
+    public Buffer adopt(#Buffer buffer) {
+        this.ledger.add(#buffer);
+        Buffer got = this.ledger.get(this.ledger.count() - 1);
+        return #= got;
+    }
+
+    /** Return one ledger buffer to the source now. */
+    public void release(Buffer buffer) {
+        int32 i = 0;
+        while (i < this.ledger.count()) {
+            if (this.ledger.get(i).id() == buffer.id()) {
+                Buffer gone #= this.ledger.removeAt(i);
+                this.source.release(#gone);
+                return;
+            }
+            i = i + 1;
+        }
+        return;
+    }
+
+    /** End the request here with this status; the inbound walk stops (spec §7.13). */
+    public void respond(int32 status) {
+        this.statusCode = status;
+        this.hasResponded = true;
+        return;
+    }
+
+    public boolean responded() { return this.hasResponded; }
+
+    public int32 status() { return this.statusCode; }
+
+    public int32 held() { return this.ledger.count(); }
+
+    /** Return every buffer still held to the source. */
+    public void close() {
+        while (this.ledger.count() > 0) {
+            Buffer gone #= this.ledger.removeAt(this.ledger.count() - 1);
+            this.source.release(#gone);
+        }
+        return;
+    }
+}

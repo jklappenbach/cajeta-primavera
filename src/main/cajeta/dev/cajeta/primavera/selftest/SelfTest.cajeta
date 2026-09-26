@@ -405,6 +405,7 @@ public class SelfTest {
         SelfTest.addClockSeamTests(t);
         SelfTest.addMaterializeTests(t);
         SelfTest.addExecutorTests(t);
+        PipelineSelfTest.add(t);
 
         return t.summary();
     }

@@ -1,0 +1,27 @@
+package dev.cajeta.primavera.pipeline;
+
+import cajeta.lang.String;
+
+/**
+ * What a stage consumes and produces (primavera-web spec §7.9). The
+ * pipeline checks at build that each stage's consumed kind is the kind the
+ * stage before it produced, so a misordered pipeline fails on launch.
+ */
+public final class Kind {
+
+    public static int32 RAW()           { return 0; }
+    public static int32 DECODED()       { return 1; }
+    public static int32 ROUTED()        { return 2; }
+    public static int32 AUTHENTICATED() { return 3; }
+    public static int32 BOUND()         { return 4; }
+
+    public static #String name(int32 kind) {
+        if (kind == 0) { String raw = "raw"; return #raw; }
+        if (kind == 1) { String decoded = "decoded"; return #decoded; }
+        if (kind == 2) { String routed = "routed"; return #routed; }
+        if (kind == 3) { String authenticated = "authenticated"; return #authenticated; }
+        if (kind == 4) { String bound = "bound"; return #bound; }
+        String other = "kind-" + (int64) kind;
+        return #other;
+    }
+}

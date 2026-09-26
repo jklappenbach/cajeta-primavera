@@ -1,0 +1,292 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.collection.ArrayList;
+import cajeta.lang.String;
+import dev.cajeta.http.HttpException;
+import dev.cajeta.http.PayloadTooLargeException;
+import dev.cajeta.primavera.pipeline.Buffer;
+import dev.cajeta.primavera.pipeline.BufferSource;
+import dev.cajeta.primavera.pipeline.Kind;
+import dev.cajeta.primavera.pipeline.Pipeline;
+import dev.cajeta.primavera.pipeline.PipelineException;
+import dev.cajeta.primavera.pipeline.RequestContext;
+import dev.cajeta.primavera.pipeline.Stage;
+import dev.cajeta.unit.TestRunner;
+
+/**
+ * primavera-web plan 2.1.8 to 2.1.10 (spec §7.8 to §7.15): the pipeline is
+ * an ordered list of stages checked at build, drives buffers in and out,
+ * owns every buffer, maps a thrown HttpException to its status with an
+ * empty body, stops at a stage that sets the response, and walks outbound
+ * in reverse.
+ */
+public final class PipelineSelfTest {
+
+    static #Buffer fill(BufferSource source, String text) {
+        Buffer b #= source.take();
+        int8[] bytes #= text.toBytes();
+        b.bytes().write(bytes, 0, text.byteLength());
+        return #b;
+    }
+
+    static #String text(Buffer b) {
+        int32 n = b.bytes().readable();
+        int8[] out = heap int8[(int64) n];
+        int32 i = 0;
+        while (i < n) { out[i] = b.bytes().at(b.bytes().readPosition() + i); i = i + 1; }
+        return heap String(#out, n);
+    }
+
+    static #String joined(ArrayList<String> log) {
+        String s = "";
+        int32 i = 0;
+        while (i < log.count()) {
+            if (i > 0) { s = s + " "; }
+            s = s + log.get(i);
+            i = i + 1;
+        }
+        return #s;
+    }
+
+    static void add(TestRunner t) {
+        t.test("pipeline build refuses a chain whose kinds do not meet, naming both stages", () -> {
+            BufferSource source = heap BufferSource(64, 8);
+            Pipeline bad = heap Pipeline(source);
+            bad.add(heap PassStage("decode", Kind.RAW(), Kind.DECODED()));
+            bad.add(heap PassStage("route", Kind.RAW(), Kind.ROUTED()));
+            boolean threw = false;
+            try {
+                bad.build();
+            } catch (PipelineException e) {
+                threw = true;
+                SelfTest.req(e.message.contains("decode") && e.message.contains("route"),
+                    "the refusal names both stages");
+            }
+            SelfTest.req(threw, "a chain whose kinds do not meet fails at build");
+
+            Pipeline good = heap Pipeline(source);
+            good.add(heap PassStage("decode", Kind.RAW(), Kind.DECODED()));
+            good.add(heap PassStage("route", Kind.DECODED(), Kind.ROUTED()));
+            good.add(heap PassStage("log", Kind.ROUTED(), Kind.ROUTED()));
+            good.build();
+            SelfTest.req(good.stageCount() == 3, "a chain whose kinds meet builds");
+
+            Pipeline wrongStart = heap Pipeline(source);
+            wrongStart.add(heap PassStage("route", Kind.DECODED(), Kind.ROUTED()));
+            boolean threwStart = false;
+            try {
+                wrongStart.build();
+            } catch (PipelineException e) {
+                threwStart = true;
+            }
+            SelfTest.req(threwStart, "the first stage must consume raw bytes");
+        });
+
+        t.test("a stage that returns a new buffer releases the old one, and the pool stays flat", () -> {
+            BufferSource source = heap BufferSource(64, 8);
+            Pipeline p = heap Pipeline(source);
+            p.add(heap ExpandStage());
+            p.add(heap PassStage("route", Kind.DECODED(), Kind.ROUTED()));
+            p.build();
+            Buffer warm #= PipelineSelfTest.fill(source, "abc");
+            RequestContext c0 = heap RequestContext(source);
+            Buffer r0 = p.run(#warm, c0);
+            SelfTest.req(PipelineSelfTest.text(r0).equals("abcabc"), "the expanding stage's buffer is what comes out");
+            c0.close();
+            int32 allocationsAfterWarmUp = source.allocations();
+            int32 idleAfterWarmUp = source.idle();
+            int32 i = 0;
+            while (i < 20) {
+                Buffer in #= PipelineSelfTest.fill(source, "abc");
+                RequestContext c = heap RequestContext(source);
+                Buffer out = p.run(#in, c);
+                SelfTest.req(out.bytes().readable() == 6, "each run sees the expanded body");
+                c.close();
+                i = i + 1;
+            }
+            SelfTest.req(source.allocations() == allocationsAfterWarmUp,
+                "20 runs after warm-up allocate no buffer");
+            SelfTest.req(source.idle() == idleAfterWarmUp,
+                "every buffer taken in a run is back in the pool after it");
+        });
+
+        t.test("a stage that throws after taking releases what it took, and the status is the exception's", () -> {
+            BufferSource source = heap BufferSource(64, 8);
+            Pipeline p = heap Pipeline(source);
+            p.add(heap TakeThenThrowStage());
+            p.build();
+            Buffer first #= PipelineSelfTest.fill(source, "x");
+            RequestContext c0 = heap RequestContext(source);
+            Buffer r0 = p.run(#first, c0);
+            c0.close();
+            int32 idle = source.idle();
+            Buffer in #= PipelineSelfTest.fill(source, "x");
+            RequestContext c = heap RequestContext(source);
+            Buffer out = p.run(#in, c);
+            SelfTest.req(c.status() == 400, "an HttpException maps to its status");
+            SelfTest.req(out.bytes().readable() == 0, "the response body carries no detail");
+            c.close();
+            SelfTest.req(source.idle() == idle, "the buffer taken before the throw went back to the pool");
+        });
+
+        t.test("a thrown HttpException subclass becomes its own status", () -> {
+            BufferSource source = heap BufferSource(64, 8);
+            Pipeline p = heap Pipeline(source);
+            p.add(heap TooLargeStage());
+            p.build();
+            Buffer in #= PipelineSelfTest.fill(source, "x");
+            RequestContext c = heap RequestContext(source);
+            Buffer out = p.run(#in, c);
+            SelfTest.req(c.status() == 413, "PayloadTooLargeException answers 413");
+            SelfTest.req(out.bytes().readable() == 0, "and says nothing in the body");
+            c.close();
+        });
+
+        t.test("a stage that sets the response ends the inbound walk", () -> {
+            BufferSource source = heap BufferSource(64, 8);
+            ArrayList<String> log = heap ArrayList<String>();
+            Pipeline p = heap Pipeline(source);
+            p.add(heap RecordingStage("a", Kind.RAW(), Kind.DECODED(), log));
+            p.add(heap PreflightStage(log));
+            p.add(heap RecordingStage("c", Kind.DECODED(), Kind.ROUTED(), log));
+            p.build();
+            Buffer in #= PipelineSelfTest.fill(source, "x");
+            RequestContext c = heap RequestContext(source);
+            Buffer out = p.run(#in, c);
+            SelfTest.req(c.status() == 204, "the early response's status stands");
+            SelfTest.req(PipelineSelfTest.joined(log).equals("in:a in:preflight out:preflight out:a"),
+                "the walk stops at the responding stage and unwinds from it");
+            c.close();
+        });
+
+        t.test("the outbound walk runs the stages in reverse order", () -> {
+            BufferSource source = heap BufferSource(64, 8);
+            ArrayList<String> log = heap ArrayList<String>();
+            Pipeline p = heap Pipeline(source);
+            p.add(heap RecordingStage("a", Kind.RAW(), Kind.DECODED(), log));
+            p.add(heap RecordingStage("b", Kind.DECODED(), Kind.ROUTED(), log));
+            p.add(heap RecordingStage("c", Kind.ROUTED(), Kind.ROUTED(), log));
+            p.build();
+            Buffer in #= PipelineSelfTest.fill(source, "x");
+            RequestContext c = heap RequestContext(source);
+            Buffer out = p.run(#in, c);
+            SelfTest.req(PipelineSelfTest.joined(log).equals("in:a in:b in:c out:c out:b out:a"),
+                "inbound in order, outbound in reverse, every stage both ways");
+            SelfTest.req(c.status() == 200, "a completed walk answers 200");
+            c.close();
+        });
+    }
+}
+
+/** Passes the buffer through unchanged; declares any kinds. */
+final class PassStage implements Stage {
+    String stageName;
+    int32 in;
+    int32 out;
+    PassStage(String name, int32 consumes, int32 produces) {
+        this.stageName = "" + name;
+        this.in = consumes;
+        this.out = produces;
+        return;
+    }
+    public #String name() { String s = "" + this.stageName; return #s; }
+    public int32 consumes() { return this.in; }
+    public int32 produces() { return this.out; }
+    public Buffer inbound(Buffer buffer, RequestContext ctx) { return #= buffer; }
+    public Buffer outbound(Buffer buffer, RequestContext ctx) { return #= buffer; }
+}
+
+/** Doubles the bytes into a fresh buffer from the pool, RAW to DECODED. */
+final class ExpandStage implements Stage {
+    ExpandStage() { return; }
+    public #String name() { String s = "expand"; return #s; }
+    public int32 consumes() { return Kind.RAW(); }
+    public int32 produces() { return Kind.DECODED(); }
+    public Buffer inbound(Buffer buffer, RequestContext ctx) {
+        Buffer fresh = ctx.take();
+        int32 n = buffer.bytes().readable();
+        int32 base = buffer.bytes().readPosition();
+        int32 pass = 0;
+        while (pass < 2) {
+            int32 i = 0;
+            while (i < n) {
+                fresh.bytes().put(buffer.bytes().at(base + i));
+                i = i + 1;
+            }
+            pass = pass + 1;
+        }
+        return #= fresh;
+    }
+    public Buffer outbound(Buffer buffer, RequestContext ctx) { return #= buffer; }
+}
+
+final class TakeThenThrowStage implements Stage {
+    TakeThenThrowStage() { return; }
+    public #String name() { String s = "take-then-throw"; return #s; }
+    public int32 consumes() { return Kind.RAW(); }
+    public int32 produces() { return Kind.DECODED(); }
+    public Buffer inbound(Buffer buffer, RequestContext ctx) {
+        Buffer scratch = ctx.take();
+        throw heap HttpException("secret detail that must not reach the body");
+    }
+    public Buffer outbound(Buffer buffer, RequestContext ctx) { return #= buffer; }
+}
+
+final class TooLargeStage implements Stage {
+    TooLargeStage() { return; }
+    public #String name() { String s = "too-large"; return #s; }
+    public int32 consumes() { return Kind.RAW(); }
+    public int32 produces() { return Kind.DECODED(); }
+    public Buffer inbound(Buffer buffer, RequestContext ctx) {
+        throw heap PayloadTooLargeException("body over the limit", 1L, 2L);
+    }
+    public Buffer outbound(Buffer buffer, RequestContext ctx) { return #= buffer; }
+}
+
+/** Logs in:<name> and out:<name> and passes the buffer through. */
+final class RecordingStage implements Stage {
+    String stageName;
+    int32 in;
+    int32 out;
+    ArrayList<String> log;
+    RecordingStage(String name, int32 consumes, int32 produces, ArrayList<String> log) {
+        this.stageName = "" + name;
+        this.in = consumes;
+        this.out = produces;
+        this.log #= log;
+        return;
+    }
+    public #String name() { String s = "" + this.stageName; return #s; }
+    public int32 consumes() { return this.in; }
+    public int32 produces() { return this.out; }
+    public Buffer inbound(Buffer buffer, RequestContext ctx) {
+        String e = "in:" + this.stageName;
+        this.log.add(#e);
+        return #= buffer;
+    }
+    public Buffer outbound(Buffer buffer, RequestContext ctx) {
+        String e = "out:" + this.stageName;
+        this.log.add(#e);
+        return #= buffer;
+    }
+}
+
+/** Answers 204 itself, so nothing after it runs. */
+final class PreflightStage implements Stage {
+    ArrayList<String> log;
+    PreflightStage(ArrayList<String> log) { this.log #= log; return; }
+    public #String name() { String s = "preflight"; return #s; }
+    public int32 consumes() { return Kind.DECODED(); }
+    public int32 produces() { return Kind.DECODED(); }
+    public Buffer inbound(Buffer buffer, RequestContext ctx) {
+        String e = "in:preflight";
+        this.log.add(#e);
+        ctx.respond(204);
+        return #= buffer;
+    }
+    public Buffer outbound(Buffer buffer, RequestContext ctx) {
+        String e = "out:preflight";
+        this.log.add(#e);
+        return #= buffer;
+    }
+}

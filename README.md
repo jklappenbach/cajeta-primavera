@@ -75,6 +75,7 @@ cajeta test     # build + run the runtime self-tests (fails the build on any fai
 
 - [`docs/specification/primavera-spec.md`](docs/specification/primavera-spec.md) — **the canonical framework specification** (scopes, config, web/endpoints, resilience, security, data, observability, …).
 - [`docs/RequestScope.md`](docs/RequestScope.md) — request scope: model, ownership, concurrency.
+- [`docs/Pipeline.md`](docs/Pipeline.md) — the processing pipeline: stages, kinds checked at build, buffers in and out, throw on error.
 - [`docs/Configuration.md`](docs/Configuration.md) — config & value injection (`@Value`/`@Config`): sources, AoT binders, frozen-mode, secrets, ML experiment config.
 - [`docs/Data.md`](docs/Data.md) — multi-store data access (SQL/DynamoDB/Redis): the neutral annotation union, generated repositories, per-store dialects.
 - [`docs/Connections.md`](docs/Connections.md) — connections, presence & addressing: the scope hierarchy, connection-as-actor, `ConnectionRegistry`, protocol capability matrix (scales via cajeta-cluster).

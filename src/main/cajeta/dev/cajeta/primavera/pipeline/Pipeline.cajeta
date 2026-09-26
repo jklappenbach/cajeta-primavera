@@ -1,0 +1,104 @@
+package dev.cajeta.primavera.pipeline;
+
+import cajeta.collection.ArrayList;
+import cajeta.lang.String;
+import dev.cajeta.http.HttpException;
+
+/**
+ * An ordered list of stages, checked at build and driven per request
+ * (primavera-web spec §7.8 to §7.15). Inbound runs the stages in order until
+ * one sets the response or the list ends, outbound runs the stages that ran
+ * in reverse, a thrown HttpException becomes its status with an empty body,
+ * and every buffer a stage took is back in the source when the context
+ * closes. No stage calls another and none writes the socket.
+ */
+public final class Pipeline {
+
+    BufferSource source;
+    ArrayList<Stage> stages;
+    boolean built;
+
+    public Pipeline(BufferSource source) {
+        this.source #= source;
+        this.stages = heap ArrayList<Stage>();
+        this.built = false;
+        return;
+    }
+
+    /** Append a stage; the order of calls is the order of execution. */
+    public void add(#Stage stage) {
+        this.stages.add(#stage);
+        return;
+    }
+
+    public int32 stageCount() { return this.stages.count(); }
+
+    /** Check the chain: the first stage consumes raw bytes and each kind meets the next. */
+    public void build() {
+        if (this.stages.count() == 0) {
+            String none = "pipeline has no stages";
+            throw heap PipelineException(#none);
+        }
+        Stage first = this.stages.get(0);
+        if (first.consumes() != Kind.RAW()) {
+            String why = "pipeline must start from raw bytes, but '"
+                + first.name() + "' consumes " + Kind.name(first.consumes());
+            throw heap PipelineException(#why);
+        }
+        int32 i = 1;
+        while (i < this.stages.count()) {
+            Stage prev = this.stages.get(i - 1);
+            Stage cur = this.stages.get(i);
+            if (cur.consumes() != prev.produces()) {
+                String why = "pipeline kinds do not meet: '"
+                    + prev.name() + "' produces " + Kind.name(prev.produces())
+                    + " and '" + cur.name() + "' consumes " + Kind.name(cur.consumes());
+                throw heap PipelineException(#why);
+            }
+            i = i + 1;
+        }
+        this.built = true;
+        return;
+    }
+
+    /**
+     * Drive one request. The returned buffer is the response body, held by
+     * the context until it closes.
+     */
+    public Buffer run(#Buffer input, RequestContext ctx) {
+        if (!this.built) {
+            String unbuilt = "pipeline was not built";
+            throw heap PipelineException(#unbuilt);
+        }
+        Buffer current = ctx.adopt(#input);
+        int32 ran = 0;
+        try {
+            int32 i = 0;
+            while (i < this.stages.count() && !ctx.responded()) {
+                Stage s = this.stages.get(i);
+                Buffer next = s.inbound(current, ctx);
+                if (next.id() != current.id()) {
+                    ctx.release(current);
+                    current = next;
+                }
+                ran = i + 1;
+                i = i + 1;
+            }
+            int32 j = ran - 1;
+            while (j >= 0) {
+                Stage s = this.stages.get(j);
+                Buffer next = s.outbound(current, ctx);
+                if (next.id() != current.id()) {
+                    ctx.release(current);
+                    current = next;
+                }
+                j = j - 1;
+            }
+        } catch (HttpException e) {
+            ctx.respond(e.httpStatus());
+            Buffer empty = ctx.take();
+            current = empty;
+        }
+        return #= current;
+    }
+}

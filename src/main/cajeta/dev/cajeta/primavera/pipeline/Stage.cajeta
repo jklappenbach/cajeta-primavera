@@ -1,0 +1,25 @@
+package dev.cajeta.primavera.pipeline;
+
+import cajeta.lang.String;
+
+/**
+ * One stage of a pipeline (primavera-web spec §7.8 to §7.14). The pipeline
+ * calls {@link #inbound} in order and {@link #outbound} in reverse. A stage
+ * returns the buffer it received or one it took from the context, throws an
+ * HttpException on failure, and sets the response on the context to end the
+ * request itself. It never calls another stage and never writes a socket.
+ */
+public interface Stage {
+
+    #String name();
+
+    /** The {@link Kind} this stage expects. */
+    int32 consumes();
+
+    /** The {@link Kind} this stage yields. */
+    int32 produces();
+
+    Buffer inbound(Buffer buffer, RequestContext ctx);
+
+    Buffer outbound(Buffer buffer, RequestContext ctx);
+}

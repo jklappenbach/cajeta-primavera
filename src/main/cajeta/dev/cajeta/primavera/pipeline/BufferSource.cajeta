@@ -1,0 +1,57 @@
+package dev.cajeta.primavera.pipeline;
+
+import cajeta.collection.ArrayList;
+import cajeta.io.net.ByteBuffer;
+
+/**
+ * The pool behind a pipeline (primavera-web spec §7.15): same-sized buffers,
+ * a bounded idle list, and an allocation count a steady-state test asserts
+ * flat. One source per pipeline, injected; stages reach it only through
+ * {@link RequestContext#take}.
+ */
+public final class BufferSource {
+
+    int32 slab;
+    int32 maxIdle;
+    int32 nextSerial;
+    int32 allocationCount;
+    ArrayList<Buffer> idleList;
+
+    public BufferSource(int32 slabSize, int32 maxIdle) {
+        this.slab = slabSize;
+        this.maxIdle = maxIdle;
+        this.nextSerial = 1;
+        this.allocationCount = 0;
+        this.idleList = heap ArrayList<Buffer>();
+        return;
+    }
+
+    /** An idle buffer cleared, or a fresh one counted in {@link #allocations}. */
+    public #Buffer take() {
+        if (this.idleList.count() > 0) {
+            Buffer reused #= this.idleList.removeAt(this.idleList.count() - 1);
+            reused.bytes().clear();
+            return #reused;
+        }
+        this.allocationCount = this.allocationCount + 1;
+        ByteBuffer bytes = heap ByteBuffer(this.slab);
+        Buffer fresh = heap Buffer(#bytes, this.nextSerial);
+        this.nextSerial = this.nextSerial + 1;
+        return #fresh;
+    }
+
+    /** Take the buffer back; kept idle up to the cap, dropped past it. */
+    public void release(#Buffer buffer) {
+        if (this.idleList.count() < this.maxIdle) {
+            this.idleList.add(#buffer);
+        }
+        return;
+    }
+
+    public int32 bufferSize() { return this.slab; }
+
+    public int32 idle() { return this.idleList.count(); }
+
+    /** Fresh buffers made since construction. */
+    public int32 allocations() { return this.allocationCount; }
+}
