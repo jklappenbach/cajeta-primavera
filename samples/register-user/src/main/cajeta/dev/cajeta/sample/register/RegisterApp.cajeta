@@ -1,0 +1,145 @@
+package dev.cajeta.sample.register;
+
+import cajeta.lang.String;
+import dev.cajeta.cloud.identity.IdentityException;
+import dev.cajeta.cloud.identity.MemoryUserPool;
+import dev.cajeta.cloud.identity.RegistrationResult;
+import dev.cajeta.cloud.identity.User;
+import dev.cajeta.cloud.identity.UserPool;
+import dev.cajeta.primavera.identity.MemoryUserDirectory;
+import dev.cajeta.primavera.identity.UserDirectory;
+import dev.cajeta.primavera.identity.UserRecord;
+import dev.cajeta.primavera.web.Endpoints;
+import dev.cajeta.primavera.web.JsonBody;
+import dev.cajeta.primavera.web.RequestView;
+import dev.cajeta.primavera.web.Response;
+import dev.cajeta.primavera.web.WebServer;
+
+/**
+ * The registration sample (primavera-web spec §5): register, look up and
+ * confirm a user over HTTP against the identity port's memory driver. The
+ * application mints its own user id and keeps the provider's subject as a
+ * link (§5.7). Every value a handler keeps is copied out of the request.
+ */
+public final class RegisterApp {
+
+    MemoryUserPool pool;
+    MemoryUserDirectory directory;
+
+    public RegisterApp() {
+        this.pool = heap MemoryUserPool();
+        this.directory = heap MemoryUserDirectory();
+        return;
+    }
+
+    public MemoryUserPool users() { return this.pool; }
+
+    public MemoryUserDirectory records() { return this.directory; }
+
+    /** The provider name the memory driver's subjects are linked under. */
+    public static String PROVIDER() { return "memory"; }
+
+    /** Registers the sample's endpoints over `pool` and `dir` on `api`. */
+    public static void routes(Endpoints api, UserPool pool, UserDirectory dir) {
+        api.json("POST", "/users", (RequestView q, JsonBody b, Response r) -> RegisterApp.register(pool, dir, b, r));
+        api.route("GET", "/users/{id}", (RequestView q, Response r) -> RegisterApp.lookup(pool, dir, q, r));
+        api.json("POST", "/users/{id}/confirm",
+            (RequestView q, JsonBody b, Response r) -> RegisterApp.confirm(pool, dir, q, b, r));
+        return;
+    }
+
+    static #RegistrationResult tryRegister(UserPool pool, String username, String password) {
+        try {
+            return pool.register(username, password);
+        } catch (IdentityException e) {
+            if (e.kind() == IdentityException.USER_EXISTS()) {
+                return null;
+            }
+            throw e;
+        }
+    }
+
+    /** `POST /users`: 201 with the new id, 400 naming a bad field, 409 for a taken username. */
+    public static void register(UserPool pool, UserDirectory dir, JsonBody b, Response r) {
+        if (!b.isString("username")) {
+            r.error(400, "username is required");
+            return;
+        }
+        if (!b.isString("password")) {
+            r.error(400, "password is required");
+            return;
+        }
+        String username #= b.stringCopy("username");
+        String password #= b.stringCopy("password");
+        if (username.byteLength() < 3 || username.byteLength() > 64) {
+            r.error(400, "username must be 3 to 64 bytes");
+            return;
+        }
+        if (password.byteLength() < 8) {
+            r.error(400, "password must be at least 8 bytes");
+            return;
+        }
+        RegistrationResult reg #= RegisterApp.tryRegister(pool, username, password);
+        if (reg == null) {
+            r.error(409, "username is taken");
+            return;
+        }
+        String subject #= reg.subject();
+        UserRecord rec #= dir.create(username, RegisterApp.PROVIDER(), subject);
+        r.json(201).field("id", rec.id()).field("username", rec.username())
+            .fieldBool("confirmed", reg.confirmed()).end();
+        return;
+    }
+
+    /** `GET /users/{id}`: the user, or 404. */
+    public static void lookup(UserPool pool, UserDirectory dir, RequestView q, Response r) {
+        String id #= q.paramString("id");
+        UserRecord rec #= dir.find(id);
+        if (rec == null) {
+            r.error(404, "no such user");
+            return;
+        }
+        User u #= pool.lookupBySubject(rec.subject());
+        r.json(200).field("id", rec.id()).field("username", rec.username())
+            .fieldBool("confirmed", u.confirmed()).end();
+        return;
+    }
+
+    /** `POST /users/{id}/confirm`: 204, 400 for a wrong code, or 404; the port is keyed by username (§5.9). */
+    public static void confirm(UserPool pool, UserDirectory dir, RequestView q, JsonBody b, Response r) {
+        String id #= q.paramString("id");
+        UserRecord rec #= dir.find(id);
+        if (rec == null) {
+            r.error(404, "no such user");
+            return;
+        }
+        if (!b.isString("code")) {
+            r.error(400, "code is required");
+            return;
+        }
+        String code #= b.stringCopy("code");
+        try {
+            pool.confirm(rec.username(), code);
+        } catch (IdentityException e) {
+            if (e.kind() == IdentityException.INVALID_CODE()) {
+                r.error(400, "code does not match");
+                return;
+            }
+            throw e;
+        }
+        r.empty(204);
+        return;
+    }
+
+    /** Serves the sample on `addr` until the process ends. */
+    public static int32 main(String[] args) {
+        RegisterApp app = heap RegisterApp();
+        Endpoints api = heap Endpoints();
+        RegisterApp.routes(api, app.users(), app.records());
+        String addr = args.count() > 0 ? args[0] : "127.0.0.1:8080";
+        WebServer web #= WebServer.bind(addr, #api);
+        System.stdout.println("register-user listening on " + addr);
+        web.serve();
+        return 0;
+    }
+}

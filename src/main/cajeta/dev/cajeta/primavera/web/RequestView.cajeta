@@ -1,0 +1,52 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.lang.Slice;
+import cajeta.lang.String;
+import dev.cajeta.http.HttpRequest;
+import dev.cajeta.http.Method;
+
+/**
+ * An endpoint's view of its request (primavera-web spec §3.7 to §3.10).
+ * Windows read the input buffer in place and allocate nothing; the
+ * `...String` readers copy, so a copy is visible where it happens.
+ */
+public final class RequestView {
+
+    HttpRequest req;
+
+    public RequestView() {
+        this.req = null;
+        return;
+    }
+
+    /** Binds the request view the transport owns for this request. */
+    public void bind(HttpRequest q) {
+        this.req #= q;
+        return;
+    }
+
+    /** The transport's request view. */
+    public HttpRequest request() { return this.req; }
+
+    public Method method() { return this.req.method(); }
+
+    public Slice<int8> path() { return this.req.path(); }
+
+    /** Path parameter `name` from the matched route, or an empty window. */
+    public Slice<int8> param(String name) { return this.req.param(name); }
+
+    /** A copy of path parameter `name`. */
+    public #String paramString(String name) { return this.req.paramString(name); }
+
+    public int64 paramInt64(String name, int64 fallback) { return this.req.paramInt64(name, fallback); }
+
+    public Slice<int8> header(String name) { return this.req.header(name); }
+
+    /** A copy of header `name`, or null when absent. */
+    public #String headerString(String name) { return this.req.headerString(name); }
+
+    /** The body as a window into the input buffer. */
+    public Slice<int8> body() { return this.req.body(); }
+
+    public int32 bodyLength() { return this.req.bodyLength(); }
+}

@@ -1,0 +1,8 @@
+package dev.cajeta.primavera.selftest;
+
+/** The view binding mode's fixed binary layout: an age, then a length-prefixed username. */
+@LittleEndian
+public view Registration {
+    int32  age;
+    String username;
+}

@@ -1,0 +1,95 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.io.net.SocketAddress;
+import cajeta.lang.String;
+import cajeta.time.Duration;
+import dev.cajeta.http.HttpRequest;
+import dev.cajeta.http.HttpResponse;
+import dev.cajeta.http.server.HttpServer;
+import dev.cajeta.primavera.context.RequestScope;
+import dev.cajeta.primavera.pipeline.Buffer;
+import dev.cajeta.primavera.pipeline.BufferSource;
+import dev.cajeta.primavera.pipeline.Pipeline;
+import dev.cajeta.primavera.pipeline.RequestContext;
+
+/**
+ * Endpoints served over `cajeta-http` (primavera-web spec §5, §7.8). Each
+ * request runs the pipeline under a fresh request scope, over the body the
+ * transport framed into its pooled input buffer and lent for the request.
+ */
+public final class WebServer {
+
+    HttpServer server;
+    Pipeline pipeline;
+    BufferSource source;
+    Endpoints endpoints;
+
+    WebServer() {
+        this.server = null;
+        this.pipeline = null;
+        this.source = null;
+        this.endpoints = null;
+        return;
+    }
+
+    /** A server on `addr` over `api` with the standard pipeline and 64 KiB buffers. */
+    public static #WebServer bind(String addr, #Endpoints api) {
+        WebServerBuilder b #= WebServer.builder();
+        b.bind(addr);
+        b.endpoints(#api);
+        return b.build();
+    }
+
+    /** A builder: an address, endpoints, optional leading stages, and a buffer size. */
+    public static #WebServerBuilder builder() {
+        return heap WebServerBuilder();
+    }
+
+    static void dispatch(Pipeline p, BufferSource s, HttpRequest q, HttpResponse r) {
+        RequestScope.enter(() -> WebServer.run(p, s, q, r));
+        return;
+    }
+
+    static void run(Pipeline p, BufferSource s, HttpRequest q, HttpResponse r) {
+        RequestContext ctx = heap RequestContext(s);
+        ctx.bindHttp(q, r);
+        Buffer input #= s.lend(q.bodyStore(), q.bodyOffset(), q.bodyLength());
+        try {
+            p.run(#input, ctx);
+        } finally {
+            ctx.close();
+        }
+        return;
+    }
+
+    /** Serves until {@link #shutdown}. */
+    public void serve() {
+        this.server.serve();
+        return;
+    }
+
+    /** Stops accepting and waits up to `deadline` for requests in flight. */
+    public boolean shutdown(Duration deadline) {
+        return this.server.shutdown(deadline);
+    }
+
+    /** The bound address, with the port the system chose for port 0. */
+    public #SocketAddress localAddress() {
+        return this.server.localAddress();
+    }
+
+    /** The bound port. */
+    public int32 port() {
+        return this.server.server.listener.boundPort();
+    }
+
+    /** Fresh connection buffers the transport's pool has made. */
+    public int32 bufferAllocations() {
+        return this.server.bufferAllocations();
+    }
+
+    /** The pipeline's own buffer source, for stages that take a buffer. */
+    public BufferSource buffers() { return this.source; }
+
+    public Pipeline pipeline() { return this.pipeline; }
+}

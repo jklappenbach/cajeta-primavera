@@ -1,0 +1,22 @@
+package dev.cajeta.primavera.identity;
+
+import cajeta.error.RecoverableException;
+import cajeta.lang.String;
+
+/** A directory operation that cannot proceed: a subject or username already linked, or an unknown id. */
+public class UserDirectoryException extends RecoverableException {
+
+    int32 kindCode;
+
+    public static int32 SUBJECT_LINKED()  { return 0; }
+    public static int32 USERNAME_TAKEN()  { return 1; }
+    public static int32 UNKNOWN_ID()      { return 2; }
+
+    public UserDirectoryException(int32 kind, #String message) {
+        this.kindCode = kind;
+        this.message #= message;
+        this.cause = 0;
+    }
+
+    public int32 kind() { return this.kindCode; }
+}

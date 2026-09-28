@@ -1,0 +1,48 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.lang.String;
+import dev.cajeta.primavera.context.RequestScope;
+import dev.cajeta.primavera.pipeline.Buffer;
+import dev.cajeta.primavera.pipeline.Kind;
+import dev.cajeta.primavera.pipeline.RequestContext;
+import dev.cajeta.primavera.pipeline.Stage;
+
+/** Runs the matched endpoint's handler with its bound values, BOUND to BOUND. */
+public final class HandlerStage implements Stage {
+
+    Endpoints endpoints;
+
+    public HandlerStage(Endpoints endpoints) {
+        this.endpoints #= endpoints;
+        return;
+    }
+
+    public #String name() { String s = "handler"; return #s; }
+    public int32 consumes() { return Kind.BOUND(); }
+    public int32 produces() { return Kind.BOUND(); }
+
+    public Buffer inbound(Buffer buffer, RequestContext ctx) {
+        RouteMatch m = (RouteMatch) RequestScope.lookup(RouteMatch.KEY());
+        Endpoint e = this.endpoints.at(m.index());
+        RequestView q = heap RequestView();
+        q.bind(ctx.request());
+        Response r = heap Response();
+        r.bind(ctx.response());
+        if (e.mode == BodyMode.JSON()) {
+            JsonBody body = (JsonBody) RequestScope.lookup(BindingStage.JSON_KEY());
+            (RequestView, JsonBody, Response) -> void h = e.json;
+            h(q, body, r);
+        } else if (e.mode == BodyMode.NONE()) {
+            (RequestView, Response) -> void h = e.plain;
+            h(q, r);
+        } else if (e.mode == BodyMode.OWNED()) {
+            e.owned.handle(q, buffer.window(), r);
+        } else {
+            (RequestView, cajeta.lang.Slice<int8>, Response) -> void h = e.window;
+            h(q, buffer.window(), r);
+        }
+        return #= buffer;
+    }
+
+    public Buffer outbound(Buffer buffer, RequestContext ctx) { return #= buffer; }
+}

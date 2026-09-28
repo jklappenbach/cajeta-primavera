@@ -40,9 +40,15 @@ public final class BufferSource {
         return #fresh;
     }
 
-    /** Take the buffer back; kept idle up to the cap, dropped past it. */
+    /** A window over bytes the transport owns, lent for one request and never pooled. */
+    public #Buffer lend(int8[] store, int32 off, int32 len) {
+        Buffer window = heap Buffer(store, off, len, 0);
+        return #window;
+    }
+
+    /** Take the buffer back; kept idle up to the cap, dropped past it. A lent window is dropped. */
     public void release(#Buffer buffer) {
-        if (this.idleList.count() < this.maxIdle) {
+        if (!buffer.isLent() && this.idleList.count() < this.maxIdle) {
             this.idleList.add(#buffer);
         }
         return;

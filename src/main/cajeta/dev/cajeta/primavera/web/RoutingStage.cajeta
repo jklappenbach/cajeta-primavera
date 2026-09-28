@@ -1,0 +1,42 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.lang.String;
+import dev.cajeta.http.HttpResponse;
+import dev.cajeta.primavera.context.RequestScope;
+import dev.cajeta.primavera.pipeline.Buffer;
+import dev.cajeta.primavera.pipeline.Kind;
+import dev.cajeta.primavera.pipeline.RequestContext;
+import dev.cajeta.primavera.pipeline.Stage;
+
+/**
+ * Matches the request to an endpoint and binds its path parameters, RAW to
+ * ROUTED. A miss answers 404, 405 with Allow, or 413 and ends the request;
+ * a match binds a {@link RouteMatch} in the request scope.
+ */
+public final class RoutingStage implements Stage {
+
+    Endpoints endpoints;
+
+    public RoutingStage(Endpoints endpoints) {
+        this.endpoints #= endpoints;
+        return;
+    }
+
+    public #String name() { String s = "routing"; return #s; }
+    public int32 consumes() { return Kind.RAW(); }
+    public int32 produces() { return Kind.ROUTED(); }
+
+    public Buffer inbound(Buffer buffer, RequestContext ctx) {
+        HttpResponse r = ctx.response();
+        int32 i = this.endpoints.router.select(ctx.request(), r);
+        if (i < 0) {
+            ctx.respond(r.status());
+            return #= buffer;
+        }
+        RouteMatch m = heap RouteMatch(i);
+        RequestScope.store(RouteMatch.KEY(), #m);
+        return #= buffer;
+    }
+
+    public Buffer outbound(Buffer buffer, RequestContext ctx) { return #= buffer; }
+}

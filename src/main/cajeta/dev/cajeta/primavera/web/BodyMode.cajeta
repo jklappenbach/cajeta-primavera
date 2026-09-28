@@ -1,0 +1,13 @@
+package dev.cajeta.primavera.web;
+
+/**
+ * How an endpoint's body is bound (primavera-web spec §3.1 to §3.3): not at
+ * all, as a window a `view` overlays, as a JSON index over the buffer, or as
+ * an owned value decoded through the codec seam.
+ */
+public final class BodyMode {
+    public static int32 NONE()  { return 0; }
+    public static int32 VIEW()  { return 1; }
+    public static int32 JSON()  { return 2; }
+    public static int32 OWNED() { return 3; }
+}

@@ -1,0 +1,77 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.collection.ArrayList;
+import cajeta.io.net.BufferPool;
+import cajeta.lang.String;
+import dev.cajeta.http.HttpRequest;
+import dev.cajeta.http.HttpResponse;
+import dev.cajeta.http.server.HttpServer;
+import dev.cajeta.http.server.HttpServerBuilder;
+import dev.cajeta.primavera.pipeline.BufferSource;
+import dev.cajeta.primavera.pipeline.Pipeline;
+import dev.cajeta.primavera.pipeline.Stage;
+
+/** Collects a web server's address, endpoints, leading stages and buffer size (64 KiB unless set). */
+public final class WebServerBuilder {
+
+    String addr;
+    int32 bytes;
+    Endpoints api;
+    ArrayList<Stage> leading;
+
+    public WebServerBuilder() {
+        this.addr = "127.0.0.1:0";
+        this.bytes = 65536;
+        this.api = null;
+        this.leading = heap ArrayList<Stage>();
+        return;
+    }
+
+    public WebServerBuilder bind(String addr) {
+        this.addr #= addr.substring(0, addr.byteLength());
+        return this;
+    }
+
+    /** The size of every connection and pipeline buffer (spec §10.2). */
+    public WebServerBuilder bufferBytes(int32 n) {
+        this.bytes = n;
+        return this;
+    }
+
+    public WebServerBuilder endpoints(#Endpoints e) {
+        this.api #= e;
+        return this;
+    }
+
+    /** A stage that runs ahead of the standard ones, in call order. */
+    public WebServerBuilder stage(#Stage s) {
+        this.leading.add(#s);
+        return this;
+    }
+
+    /** Builds the pipeline, checks it, and binds the server. */
+    public #WebServer build() {
+        WebServer ws = heap WebServer();
+        if (this.api == null) {
+            this.api = heap Endpoints();
+        }
+        ws.endpoints #= this.api;
+        this.api = null;
+        ws.source = heap BufferSource(this.bytes, 16);
+        Pipeline p = heap Pipeline(ws.source);
+        while (this.leading.count() > 0) {
+            Stage s #= this.leading.removeAt(0);
+            p.add(#s);
+        }
+        HttpPipeline.addStandard(p, ws.endpoints);
+        p.build();
+        ws.pipeline #= p;
+        Dispatch d = heap Dispatch(ws.pipeline, ws.source);
+        HttpServerBuilder hb #= HttpServer.builder();
+        hb.bind(this.addr);
+        hb.bufferPool(heap BufferPool(this.bytes, 64));
+        hb.handler((HttpRequest q, HttpResponse r) -> #d.run(q, r));
+        ws.server #= hb.build();
+        return #ws;
+    }
+}

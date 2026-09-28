@@ -1,0 +1,20 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.lang.String;
+
+/** The request-scoped result of routing: which endpoint matched. */
+public final class RouteMatch {
+
+    int32 endpointIndex;
+
+    public RouteMatch(int32 index) {
+        this.endpointIndex = index;
+        return;
+    }
+
+    /** The endpoint's registration order in its {@link Endpoints}. */
+    public int32 index() { return this.endpointIndex; }
+
+    /** The request-scope key it is bound under. */
+    public static String KEY() { return "dev.cajeta.primavera.web.RouteMatch"; }
+}

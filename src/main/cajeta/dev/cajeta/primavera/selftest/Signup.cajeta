@@ -1,0 +1,9 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.lang.String;
+
+/** The owned binding mode's decoded type. */
+public class Signup {
+    public String username;
+    public String password;
+}

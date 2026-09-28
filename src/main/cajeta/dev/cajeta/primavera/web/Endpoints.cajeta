@@ -1,0 +1,72 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.collection.ArrayList;
+import cajeta.lang.Slice;
+import cajeta.lang.String;
+import dev.cajeta.http.HttpRequest;
+import dev.cajeta.http.HttpResponse;
+import dev.cajeta.http.routing.Router;
+
+/**
+ * The typed endpoint surface (primavera-web spec §5.2): each registration
+ * names a method, a route pattern, a body binding mode, and a handler whose
+ * parameters are the bound values. The annotation form compiles down to
+ * these calls; this surface stays public.
+ */
+public final class Endpoints {
+
+    Router router;
+    ArrayList<Endpoint> list;
+
+    public Endpoints() {
+        this.router = heap Router();
+        this.list = heap ArrayList<Endpoint>();
+        return;
+    }
+
+    void add(String method, String pattern, #Endpoint e) {
+        this.router.route(method, pattern, (HttpRequest q, HttpResponse r) -> {
+            return;
+        });
+        this.list.add(#e);
+        return;
+    }
+
+    /** An endpoint with no body binding. */
+    public Endpoints route(String method, String pattern, (RequestView, Response) -> void handler) {
+        Endpoint e = heap Endpoint(BodyMode.NONE());
+        e.plain #= handler;
+        this.add(method, pattern, #e);
+        return this;
+    }
+
+    /** An endpoint whose body is a JSON object indexed in place. */
+    public Endpoints json(String method, String pattern, (RequestView, JsonBody, Response) -> void handler) {
+        Endpoint e = heap Endpoint(BodyMode.JSON());
+        e.json #= handler;
+        this.add(method, pattern, #e);
+        return this;
+    }
+
+    /** An endpoint handed the body window, for a `view` over a fixed binary layout. */
+    public Endpoints window(String method, String pattern, (RequestView, Slice<int8>, Response) -> void handler) {
+        Endpoint e = heap Endpoint(BodyMode.VIEW());
+        e.window #= handler;
+        this.add(method, pattern, #e);
+        return this;
+    }
+
+    /** An endpoint whose body decodes into a fresh owned `T`; the buffer is free once decoded. */
+    public final Endpoints owned<T>(String method, String pattern, (RequestView, T, Response) -> void handler) {
+        Endpoint e = heap Endpoint(BodyMode.OWNED());
+        OwnedEndpoint<T> decoder = heap OwnedEndpoint<T>(handler);
+        e.owned #= decoder;
+        this.add(method, pattern, #e);
+        return this;
+    }
+
+    /** How many endpoints are registered. */
+    public int32 count() { return this.list.count(); }
+
+    Endpoint at(int32 i) { return this.list.get(i); }
+}

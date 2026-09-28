@@ -1,0 +1,8 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.lang.Slice;
+
+/** Handles a request whose body arrives as a window over the current buffer. */
+interface BodyHandler {
+    void handle(RequestView q, Slice<int8> body, Response r);
+}

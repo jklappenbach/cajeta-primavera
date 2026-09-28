@@ -1,0 +1,156 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.lang.String;
+import dev.cajeta.http.HttpResponse;
+
+/**
+ * Builds an endpoint's response straight into the connection's output
+ * buffer (primavera-web spec §4): a status, headers, and a JSON object
+ * written field by field with no intermediate tree. One per request.
+ */
+public final class Response {
+
+    HttpResponse res;
+    boolean needComma;
+
+    public Response() {
+        this.res = null;
+        this.needComma = false;
+        return;
+    }
+
+    /** Binds the response view the transport owns for this request. */
+    public void bind(HttpResponse r) {
+        this.res #= r;
+        this.needComma = false;
+        return;
+    }
+
+    /** The transport's response view, for anything the builder does not cover. */
+    public HttpResponse raw() { return this.res; }
+
+    public Response status(int32 code) {
+        this.res.status(code);
+        return this;
+    }
+
+    public Response header(String name, String value) {
+        this.res.setHeader(name, value);
+        return this;
+    }
+
+    /** A plain-text body. */
+    public void text(int32 code, String body) {
+        this.res.status(code);
+        this.res.setHeader("Content-Type", "text/plain; charset=utf-8");
+        this.res.write(body);
+        return;
+    }
+
+    /** A status with no body. */
+    public void empty(int32 code) {
+        this.res.status(code);
+        return;
+    }
+
+    /** Starts a JSON object body with `code`; close it with {@link #end}. */
+    public Response json(int32 code) {
+        this.res.status(code);
+        this.res.setHeader("Content-Type", "application/json");
+        this.res.write("{");
+        this.needComma = false;
+        return this;
+    }
+
+    void name(String n) {
+        if (this.needComma) {
+            this.res.write(",\"");
+        } else {
+            this.res.write("\"");
+        }
+        this.res.write(n);
+        this.res.write("\":");
+        this.needComma = true;
+        return;
+    }
+
+    public Response field(String n, String value) {
+        this.name(n);
+        if (value == null) {
+            this.res.write("null");
+            return this;
+        }
+        this.res.write("\"");
+        if (Response.clean(value)) {
+            this.res.write(value);
+        } else {
+            String escaped #= Response.escape(value);
+            this.res.write(escaped);
+        }
+        this.res.write("\"");
+        return this;
+    }
+
+    public Response field(String n, int64 value) {
+        this.name(n);
+        this.res.write("" + value);
+        return this;
+    }
+
+    public Response fieldBool(String n, boolean value) {
+        this.name(n);
+        this.res.write(value ? "true" : "false");
+        return this;
+    }
+
+    /** Closes the JSON object. */
+    public void end() {
+        this.res.write("}");
+        return;
+    }
+
+    /** A JSON error body `{"error": message}` with `code`. */
+    public void error(int32 code, String message) {
+        this.json(code).field("error", message).end();
+        return;
+    }
+
+    static boolean clean(String s) {
+        int32 i = 0;
+        while (i < s.byteLength()) {
+            int8 ch = s.byteAt(i);
+            if (ch == (int8) 34 || ch == (int8) 92 || (ch >= (int8) 0 && ch < (int8) 32)) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    static #String escape(String s) {
+        String out = "";
+        int32 i = 0;
+        while (i < s.byteLength()) {
+            int8 ch = s.byteAt(i);
+            if (ch == (int8) 34) {
+                out = out + "\\\"";
+            } else if (ch == (int8) 92) {
+                out = out + "\\\\";
+            } else if (ch == (int8) 10) {
+                out = out + "\\n";
+            } else if (ch == (int8) 13) {
+                out = out + "\\r";
+            } else if (ch == (int8) 9) {
+                out = out + "\\t";
+            } else if (ch >= (int8) 0 && ch < (int8) 32) {
+                String hex = "0123456789abcdef";
+                out = out + "\\u00" + hex.substring((int32) ch / 16, (int32) ch / 16 + 1)
+                    + hex.substring((int32) ch % 16, (int32) ch % 16 + 1);
+            } else {
+                out = out + s.substring(i, i + 1);
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+}

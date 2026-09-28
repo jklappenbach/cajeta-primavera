@@ -1,0 +1,179 @@
+package dev.cajeta.sample.register;
+
+import cajeta.lang.String;
+import cajeta.time.Duration;
+import dev.cajeta.cloud.identity.MemoryUserPool;
+import dev.cajeta.http.ClientRequest;
+import dev.cajeta.http.ClientResponse;
+import dev.cajeta.http.client.HttpClient;
+import dev.cajeta.primavera.web.Endpoints;
+import dev.cajeta.primavera.web.WebServer;
+
+/**
+ * The sample's self-test (primavera-web plan 2.1.1, 2.1.2, 2.1.4): the
+ * registration contract end to end over one keep-alive connection, flat
+ * buffer pools across N requests, and an equal live count across a run.
+ * Exits 0 when every check passes.
+ */
+public final class SampleSelfTest {
+
+    static int32 failures;
+    static int32 checks;
+
+    static void check(boolean ok, String label) {
+        SampleSelfTest.checks = SampleSelfTest.checks + 1;
+        if (!ok) {
+            SampleSelfTest.failures = SampleSelfTest.failures + 1;
+            System.stdout.println("  FAIL " + label);
+        }
+        return;
+    }
+
+    static async int32 serve(WebServer web) {
+        web.serve();
+        return 1;
+    }
+
+    /** The string value of top-level field `name` in a flat JSON object, or "". */
+    static #String field(String json, String name) {
+        String key = "\"" + name + "\":\"";
+        int32 at = json.indexOf(key);
+        if (at < 0) {
+            return "";
+        }
+        int32 from = at + key.byteLength();
+        int32 to = from;
+        while (to < json.byteLength() && json.byteAt(to) != (int8) 34) {
+            to = to + 1;
+        }
+        return json.substring(from, to);
+    }
+
+    static int32 post(HttpClient client, ClientResponse resp, String url, String body) {
+        ClientRequest req #= ClientRequest.post(url);
+        req.setHeader("Content-Type", "application/json");
+        req.body(body);
+        client.send(req, resp);
+        return resp.status();
+    }
+
+    static int32 get(HttpClient client, ClientResponse resp, String url) {
+        ClientRequest req = heap ClientRequest(url);
+        client.send(req, resp);
+        return resp.status();
+    }
+
+    static async int32 contract(int32 port, MemoryUserPool pool, WebServer web) {
+        String base = "http://127.0.0.1:" + port;
+        HttpClient client = heap HttpClient();
+        ClientResponse resp = heap ClientResponse();
+
+        int32 s = SampleSelfTest.post(client, resp, base + "/users", "{\"username\":\"ada\",\"password\":\"correct horse\"}");
+        SampleSelfTest.check(s == 201, "POST /users answers 201 (got " + s + ")");
+        String created #= resp.bodyString();
+        String id #= SampleSelfTest.field(created, "id");
+        SampleSelfTest.check(id.byteLength() > 0, "the 201 body carries the application id");
+        SampleSelfTest.check(created.indexOf("\"username\":\"ada\"") >= 0, "the 201 body carries the username");
+
+        s = SampleSelfTest.post(client, resp, base + "/users", "{\"username\":\"ada\",\"password\":\"another one\"}");
+        SampleSelfTest.check(s == 409, "a duplicate username answers 409 (got " + s + ")");
+
+        s = SampleSelfTest.post(client, resp, base + "/users", "{\"password\":\"correct horse\"}");
+        String missing #= resp.bodyString();
+        SampleSelfTest.check(s == 400, "a body without a username answers 400 (got " + s + ")");
+        SampleSelfTest.check(missing.indexOf("username") >= 0, "the 400 names the username field");
+
+        s = SampleSelfTest.post(client, resp, base + "/users", "{\"username\":\"bob\",\"password\":\"short\"}");
+        String weak #= resp.bodyString();
+        SampleSelfTest.check(s == 400 && weak.indexOf("password") >= 0, "a short password answers 400 naming the password field");
+
+        s = SampleSelfTest.post(client, resp, base + "/users", "not json");
+        SampleSelfTest.check(s == 400, "a body that is not JSON answers 400 (got " + s + ")");
+
+        s = SampleSelfTest.get(client, resp, base + "/users/" + id);
+        String found #= resp.bodyString();
+        SampleSelfTest.check(s == 200, "GET /users/{id} answers 200 (got " + s + ")");
+        SampleSelfTest.check(found.indexOf("\"username\":\"ada\"") >= 0, "the lookup returns the user");
+        SampleSelfTest.check(found.indexOf("\"confirmed\":false") >= 0, "a new user is unconfirmed");
+
+        s = SampleSelfTest.get(client, resp, base + "/users/no-such-id");
+        SampleSelfTest.check(s == 404, "an unknown id answers 404 (got " + s + ")");
+
+        String code #= pool.hooks().lastConfirmationCode(SampleSelfTest.subjectOf(pool, "ada"));
+        s = SampleSelfTest.post(client, resp, base + "/users/" + id + "/confirm", "{\"code\":\"000000x\"}");
+        SampleSelfTest.check(s == 400, "a wrong confirmation code answers 400 (got " + s + ")");
+        s = SampleSelfTest.post(client, resp, base + "/users/" + id + "/confirm", "{\"code\":\"" + code + "\"}");
+        SampleSelfTest.check(s == 204, "the delivered code confirms through the username (got " + s + ")");
+        s = SampleSelfTest.get(client, resp, base + "/users/" + id);
+        String confirmed #= resp.bodyString();
+        SampleSelfTest.check(confirmed.indexOf("\"confirmed\":true") >= 0, "the lookup reports the confirmation");
+
+        int32 i = 0;
+        while (i < 8) {
+            SampleSelfTest.post(client, resp, base + "/users", "{\"username\":\"warm" + i + "\",\"password\":\"correct horse\"}");
+            i = i + 1;
+        }
+        int32 transport = web.bufferAllocations();
+        int32 stages = web.buffers().allocations();
+        i = 0;
+        while (i < 200) {
+            s = SampleSelfTest.post(client, resp, base + "/users", "{\"username\":\"user" + i + "\",\"password\":\"correct horse\"}");
+            if (s != 201) {
+                SampleSelfTest.check(false, "registration " + i + " answers 201 (got " + s + ")");
+            }
+            i = i + 1;
+        }
+        SampleSelfTest.check(web.bufferAllocations() == transport,
+            "200 registrations on one connection make no fresh transport buffer ("
+            + (web.bufferAllocations() - transport) + ")");
+        SampleSelfTest.check(web.buffers().allocations() == stages,
+            "200 registrations make no fresh pipeline buffer (" + (web.buffers().allocations() - stages) + ")");
+
+        int32 before = web.bufferAllocations();
+        i = 0;
+        while (i < 20) {
+            HttpClient fresh = heap HttpClient();
+            ClientResponse r2 = heap ClientResponse();
+            SampleSelfTest.get(fresh, r2, base + "/users/" + id);
+            i = i + 1;
+        }
+        SampleSelfTest.check(web.bufferAllocations() - before <= 2,
+            "20 sequential connections reuse idle buffers (" + (web.bufferAllocations() - before) + " fresh)");
+        return 1;
+    }
+
+    static #String subjectOf(MemoryUserPool pool, String username) {
+        return pool.lookupByName(username).subject();
+    }
+
+    /** One full run: an app, a server on an ephemeral port, the contract, a shutdown. */
+    static void once() {
+        RegisterApp app = heap RegisterApp();
+        MemoryUserPool pool = app.users();
+        Endpoints api = heap Endpoints();
+        RegisterApp.routes(api, pool, app.records());
+        scope {
+            WebServer web #= WebServer.bind("127.0.0.1:0", #api);
+            int32 port = web.port();
+            Task<int32> sv = spawn serve(web);
+            Task<int32> tc = spawn contract(port, pool, web);
+            SampleSelfTest.check(await tc == 1, "the contract ran to the end");
+            web.shutdown(Duration.ofSeconds(2));
+            SampleSelfTest.check(await sv == 1, "the accept loop exited");
+        }
+        return;
+    }
+
+    public static int32 run() {
+        System.stdout.println("=== register-user self-test ===");
+        SampleSelfTest.once();
+        int64 live = Cajeta.liveCount();
+        SampleSelfTest.once();
+        int64 after = Cajeta.liveCount();
+        SampleSelfTest.check(after == live, "the live count is equal across a whole run (" + (after - live)
+            + "); it is blind to arrays, which the pool counters cover");
+        System.stdout.println("register-user: " + (SampleSelfTest.checks - SampleSelfTest.failures)
+            + " of " + SampleSelfTest.checks + " checks passed");
+        return SampleSelfTest.failures == 0 ? 0 : 1;
+    }
+}

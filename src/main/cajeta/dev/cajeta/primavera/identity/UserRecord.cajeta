@@ -1,0 +1,41 @@
+package dev.cajeta.primavera.identity;
+
+import cajeta.lang.String;
+
+/**
+ * The application's user record (primavera-web spec §5.7): the id the
+ * application minted, the username, and the provider subject it links to.
+ * A lookup returns an owned snapshot, never a window into directory state.
+ */
+public final class UserRecord {
+
+    String userId;
+    String userName;
+    String providerName;
+    String subjectId;
+
+    public UserRecord(String id, String username, String provider, String subject) {
+        this.userId = "" + id;
+        this.userName = "" + username;
+        this.providerName = "" + provider;
+        this.subjectId = "" + subject;
+        return;
+    }
+
+    /** The application's id, the key its routes carry. */
+    public String id() { return this.userId; }
+
+    public String username() { return this.userName; }
+
+    /** The identity provider the subject belongs to. */
+    public String provider() { return this.providerName; }
+
+    /** The provider's subject, a link rather than a key. */
+    public String subject() { return this.subjectId; }
+
+    /** An independent copy. */
+    public #UserRecord copy() {
+        UserRecord out = heap UserRecord(this.userId, this.userName, this.providerName, this.subjectId);
+        return #out;
+    }
+}

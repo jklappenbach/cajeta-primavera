@@ -1,0 +1,260 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.lang.Slice;
+import cajeta.lang.String;
+import cajeta.time.Duration;
+import dev.cajeta.http.Bytes;
+import dev.cajeta.http.ClientRequest;
+import dev.cajeta.http.ClientResponse;
+import dev.cajeta.http.client.HttpClient;
+import dev.cajeta.http.status.BadRequestException;
+import dev.cajeta.http.status.ConflictException;
+import dev.cajeta.primavera.context.RequestScope;
+import dev.cajeta.primavera.pipeline.Buffer;
+import dev.cajeta.primavera.pipeline.Kind;
+import dev.cajeta.primavera.pipeline.RequestContext;
+import dev.cajeta.primavera.pipeline.Stage;
+import dev.cajeta.primavera.test.TrackedBean;
+import dev.cajeta.primavera.web.Endpoints;
+import dev.cajeta.primavera.web.JsonBody;
+import dev.cajeta.primavera.web.RequestView;
+import dev.cajeta.primavera.web.Response;
+import dev.cajeta.primavera.web.WebServer;
+import dev.cajeta.primavera.web.WebServerBuilder;
+import dev.cajeta.unit.TestRunner;
+
+/**
+ * primavera-web plan 2.1.3, 2.1.5 and 2.1.6 over a live server, and the
+ * JSON index on its own: values a handler keeps survive the input buffer
+ * being overwritten only when copied out, each binding mode reads the same
+ * field, and a request-scoped component resolves once per request.
+ */
+public final class WebSelfTest {
+
+    static int8[] keptStore;
+    static int32 keptOff;
+    static int32 keptLen;
+    static String copied;
+    static int32 made;
+
+    static int32 put(int8[] b, int32 at, String s) {
+        int32 i = 0;
+        while (i < s.byteLength()) {
+            b[at + i] = s.byteAt(i);
+            i = i + 1;
+        }
+        return at + s.byteLength();
+    }
+
+    static void addIndexTests(TestRunner t) {
+        t.test("the JSON index reads fields in place from a window at an offset", () -> {
+            int8[] buf = heap int8[160];
+            WebSelfTest.put(buf, 0, "GET / HTTP/1.1\r\n\r\n\"{{");
+            String doc = "{\"username\":\"ada\\n\\u00e9\\ud83d\\ude00\",\"age\":36,\"admin\":true,\"tags\":[1,{\"x\":2}],\"q\":\"a\\\"b\"}";
+            int32 end = WebSelfTest.put(buf, 40, doc);
+            JsonBody b = heap JsonBody();
+            b.bind(buf, 40, end - 40);
+            SelfTest.req(b.has("username") && b.has("age") && !b.has("x"), "top-level fields are found and nested ones are not");
+            SelfTest.req(b.isString("username") && !b.isString("age"), "string fields are told from numbers");
+            SelfTest.req(Bytes.equals(b.string("q"), "a\\\"b"), "the raw window keeps escapes as sent");
+            String q #= b.stringCopy("q");
+            SelfTest.req(q.equals("a\"b"), "the copy decodes escapes");
+            String name #= b.stringCopy("username");
+            SelfTest.req(name.byteLength() == 3 + 1 + 2 + 4, "\\n, a BMP escape and a surrogate pair decode to UTF-8");
+            SelfTest.req(b.int64Of("age", -1) == 36 && b.int64Of("missing", -1) == -1, "integers read in place, with a fallback");
+            SelfTest.req(b.boolOf("admin", false), "booleans read in place");
+            SelfTest.req(b.stringCopy("age") == null, "a copy of a non-string field is null");
+        });
+
+        t.test("a body that is not a JSON object is a 400", () -> {
+            int8[] buf = heap int8[16];
+            int32 end = WebSelfTest.put(buf, 0, "[1,2]");
+            JsonBody b = heap JsonBody();
+            boolean refused = false;
+            try {
+                b.bind(buf, 0, end);
+            } catch (BadRequestException e) {
+                refused = true;
+            }
+            SelfTest.req(refused, "an array body raises BadRequestException");
+        });
+    }
+
+    static void keep(RequestView q, JsonBody b, Response r) {
+        WebSelfTest.keptStore #= q.request().bodyStore();
+        WebSelfTest.keptOff = q.request().bodyOffset();
+        WebSelfTest.keptLen = q.bodyLength();
+        r.empty(204);
+        return;
+    }
+
+    static void copy(RequestView q, JsonBody b, Response r) {
+        WebSelfTest.copied #= b.stringCopy("username");
+        r.empty(204);
+        return;
+    }
+
+    static void byJson(RequestView q, JsonBody b, Response r) {
+        r.json(200).field("username", b.stringCopy("username")).end();
+        return;
+    }
+
+    static void byView(RequestView q, Slice<int8> body, Response r) {
+        Registration v = Registration(body);
+        r.json(200).field("username", v.username).end();
+        return;
+    }
+
+    static void byOwned(RequestView q, Signup s, Response r) {
+        r.json(200).field("username", s.username).end();
+        return;
+    }
+
+    static #Object track() {
+        WebSelfTest.made = WebSelfTest.made + 1;
+        TrackedBean bean = heap TrackedBean(WebSelfTest.made);
+        return #bean;
+    }
+
+    static void scoped(RequestView q, Response r) {
+        String key = "dev.cajeta.primavera.test.TrackedBean";
+        RequestScope.materialize(key, () -> WebSelfTest.track());
+        RequestScope.materialize(key, () -> WebSelfTest.track());
+        TrackedBean first = (TrackedBean) RequestScope.lookup(key);
+        TrackedBean again = (TrackedBean) RequestScope.lookup(key);
+        r.json(200).field("same", (int64) (first.tag == again.tag ? 1 : 0)).end();
+        return;
+    }
+
+    static void conflict(RequestView q, Response r) {
+        r.json(200).field("partial", "written before the throw");
+        throw heap ConflictException("detail the client must not see");
+    }
+
+    static #Endpoints api() {
+        Endpoints api = heap Endpoints();
+        api.json("POST", "/keep", (RequestView q, JsonBody b, Response r) -> WebSelfTest.keep(q, b, r));
+        api.json("POST", "/copy", (RequestView q, JsonBody b, Response r) -> WebSelfTest.copy(q, b, r));
+        api.json("POST", "/json", (RequestView q, JsonBody b, Response r) -> WebSelfTest.byJson(q, b, r));
+        api.window("POST", "/view", (RequestView q, Slice<int8> b, Response r) -> WebSelfTest.byView(q, b, r));
+        api.owned<Signup>("POST", "/owned", (RequestView q, Signup s, Response r) -> WebSelfTest.byOwned(q, s, r));
+        api.route("GET", "/scoped", (RequestView q, Response r) -> WebSelfTest.scoped(q, r));
+        api.route("GET", "/conflict", (RequestView q, Response r) -> WebSelfTest.conflict(q, r));
+        return #api;
+    }
+
+    static async int32 serve(WebServer web) {
+        web.serve();
+        return 1;
+    }
+
+    static int32 post(HttpClient client, ClientResponse resp, String url, String body) {
+        ClientRequest req #= ClientRequest.post(url);
+        req.setHeader("Content-Type", "application/json");
+        req.body(body);
+        client.send(req, resp);
+        return resp.status();
+    }
+
+    static async int32 drive(int32 port) {
+        String base = "http://127.0.0.1:" + port;
+        HttpClient client = heap HttpClient();
+        ClientResponse resp = heap ClientResponse();
+        String doc = "{\"username\":\"ada\",\"password\":\"correct horse\"}";
+        int32 failures = 0;
+
+        WebSelfTest.post(client, resp, base + "/keep", doc);
+        String kept #= Bytes.toString(WebSelfTest.keptStore[WebSelfTest.keptOff:WebSelfTest.keptOff + WebSelfTest.keptLen]);
+        if (kept.equals(doc)) {
+            System.stdout.println("  a kept view still read the request after the overwrite");
+            failures = failures + 1;
+        }
+        WebSelfTest.post(client, resp, base + "/copy", doc);
+        if (WebSelfTest.copied == null || !WebSelfTest.copied.equals("ada")) {
+            System.stdout.println("  the copied username did not survive the overwrite");
+            failures = failures + 1;
+        }
+
+        WebSelfTest.post(client, resp, base + "/json", doc);
+        String viaJson #= resp.bodyString();
+        WebSelfTest.post(client, resp, base + "/owned", doc);
+        String viaOwned #= resp.bodyString();
+        int8[] wire = heap int8[11];
+        wire[0] = (int8) 36;
+        wire[4] = (int8) 3;
+        WebSelfTest.put(wire, 8, "ada");
+        ClientRequest bin #= ClientRequest.post(base + "/view");
+        bin.setHeader("Content-Type", "application/octet-stream");
+        bin.body(wire, 11);
+        client.send(bin, resp);
+        String viaView #= resp.bodyString();
+        String want = "{\"username\":\"ada\"}";
+        if (!viaJson.equals(want) || !viaOwned.equals(want) || !viaView.equals(want)) {
+            System.stdout.println("  binding modes disagree: json " + viaJson + " owned " + viaOwned + " view " + viaView);
+            failures = failures + 1;
+        }
+
+        ClientRequest sreq = heap ClientRequest(base + "/scoped");
+        TrackedBean.resetDrops();
+        WebSelfTest.made = 0;
+        client.send(sreq, resp);
+        String once #= resp.bodyString();
+        client.send(sreq, resp);
+        if (WebSelfTest.made != 2 || TrackedBean.drops != 2 || !once.equals("{\"same\":1}")) {
+            System.stdout.println("  request scope: made " + WebSelfTest.made + " dropped " + TrackedBean.drops + " body " + once);
+            failures = failures + 1;
+        }
+
+        ClientRequest creq = heap ClientRequest(base + "/conflict");
+        client.send(creq, resp);
+        if (resp.status() != 409 || resp.bodyLength() != 0) {
+            System.stdout.println("  a thrown ConflictException answered " + resp.status() + " with " + resp.bodyLength() + " body bytes");
+            failures = failures + 1;
+        }
+        return failures;
+    }
+
+    static void addServerTests(TestRunner t) {
+        t.test("kept views read overwritten bytes, copies survive; binding modes agree; request scope is per request", () -> {
+            scope {
+                Endpoints api #= WebSelfTest.api();
+                WebServerBuilder b #= WebServer.builder();
+                b.bind("127.0.0.1:0");
+                b.endpoints(#api);
+                b.stage(heap ScribbleStage());
+                WebServer web #= b.build();
+                int32 port = web.port();
+                Task<int32> sv = spawn serve(web);
+                Task<int32> td = spawn drive(port);
+                int32 failures = await td;
+                web.shutdown(Duration.ofSeconds(2));
+                await sv;
+                SelfTest.req(failures == 0, "every web check held (see the lines above)");
+            }
+        });
+    }
+
+    static void add(TestRunner t) {
+        WebSelfTest.addIndexTests(t);
+        WebSelfTest.addServerTests(t);
+    }
+}
+
+/** Overwrites the request body with 'X' once the handler has returned (spec §3.6), RAW to RAW. */
+final class ScribbleStage implements Stage {
+    ScribbleStage() { return; }
+    public #String name() { String s = "scribble"; return #s; }
+    public int32 consumes() { return Kind.RAW(); }
+    public int32 produces() { return Kind.RAW(); }
+    public Buffer inbound(Buffer buffer, RequestContext ctx) { return #= buffer; }
+    public Buffer outbound(Buffer buffer, RequestContext ctx) {
+        int8[] b = buffer.store();
+        int32 i = 0;
+        while (i < buffer.length()) {
+            b[buffer.offset() + i] = (int8) 88;
+            i = i + 1;
+        }
+        return #= buffer;
+    }
+}
+

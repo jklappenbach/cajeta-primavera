@@ -15,7 +15,7 @@
 
     "details": {
         "name":               "dev.cajeta.primavera",
-        "version":            "0.1.0",
+        "version":            "0.2.0",
         "description":        "primavera — enterprise framework for Cajeta (components, web, request/session scope)",
         "license":            "Apache-2.0",
         "authors":            ["Julian Klappenbach"],
@@ -50,7 +50,7 @@
         // test source root yet). Move it back when either lands.
         "dependencies": {
             "dev.cajeta.logging": "0.8.*",
-            "dev.cajeta.http":    "0.3.1",
+            "dev.cajeta.http":    "0.4.0",
             "dev.cajeta.unit":    "0.3.*"
         },
 
@@ -77,12 +77,15 @@
         },
 
         "test": {
-            "description": "Build + run primavera's unit tests (fails on any failure)",
+            "description": "Build + run primavera's unit tests, then the sample's self-test against this tree",
             "actions": [
                 { "action": "build", "flavor": "debug", "profile": "test",
                   "entry-method": "dev.cajeta.primavera.selftest.SelfTest.run",
                   "id": "testbin" },
-                { "action": "test", "input": "${testbin.path}" }
+                { "action": "test", "input": "${testbin.path}" },
+                { "action": "exec", "command": "cajeta", "args": ["install"] },
+                { "action": "exec", "command": "cajeta", "args": ["test"],
+                  "working-dir": "samples/register-user" }
             ]
         },
 

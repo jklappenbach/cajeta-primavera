@@ -1,0 +1,29 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.codec.json.Json;
+import cajeta.lang.Slice;
+
+/** Decodes the body into a fresh owned `T` and hands it to the endpoint's handler (spec §3.3). */
+final class OwnedEndpoint<T> implements BodyHandler {
+
+    (RequestView, T, Response) -> void handler;
+
+    OwnedEndpoint((RequestView, T, Response) -> void handler) {
+        this.handler #= handler;
+        return;
+    }
+
+    public void handle(RequestView q, Slice<int8> body, Response r) {
+        int32 n = (int32) body.count();
+        int8[] copy = heap int8[n];
+        int32 i = 0;
+        while (i < n) {
+            copy[i] = body[i];
+            i = i + 1;
+        }
+        T value #= Json.parse<T>(copy, (int64) n);
+        (RequestView, T, Response) -> void h = this.handler;
+        h(q, value, r);
+        return;
+    }
+}

@@ -1,25 +1,75 @@
 package dev.cajeta.primavera.pipeline;
 
 import cajeta.io.net.ByteBuffer;
+import cajeta.lang.Slice;
 
 /**
  * The buffer a stage receives and returns (primavera-web spec §7.10, §7.15).
  * Only {@link BufferSource} constructs one, so every buffer in flight came
- * from the pool and goes back to it. Stages borrow, the pipeline owns.
+ * from the pool, or is a window the transport lent for one request. Stages
+ * borrow, the pipeline owns.
  */
 public final class Buffer {
 
     ByteBuffer inner;
+    int8[] lent;
+    int32 lentOff;
+    int32 lentLen;
     int32 serial;
 
     Buffer(#ByteBuffer inner, int32 serial) {
         this.inner #= inner;
+        this.lent = null;
+        this.lentOff = 0;
+        this.lentLen = 0;
         this.serial = serial;
         return;
     }
 
-    /** The bytes, a borrow; cursors and contents are the stage's to move. */
+    Buffer(int8[] store, int32 off, int32 len, int32 serial) {
+        this.inner = null;
+        this.lent #= store;
+        this.lentOff = off;
+        this.lentLen = len;
+        this.serial = serial;
+        return;
+    }
+
+    /** The pooled bytes, a borrow; null for a lent window. */
     public ByteBuffer bytes() { return this.inner; }
+
+    /** True for a window the transport lent, which goes back to no pool. */
+    public boolean isLent() { return this.inner == null; }
+
+    /** The array the readable bytes live in. */
+    public int8[] store() {
+        if (this.inner == null) {
+            return this.lent;
+        }
+        return this.inner.array();
+    }
+
+    /** Where the readable bytes start in {@link #store}. */
+    public int32 offset() {
+        if (this.inner == null) {
+            return this.lentOff;
+        }
+        return this.inner.readPosition();
+    }
+
+    /** How many bytes are readable. */
+    public int32 length() {
+        if (this.inner == null) {
+            return this.lentLen;
+        }
+        return this.inner.readable();
+    }
+
+    /** The readable bytes as a window. */
+    public Slice<int8> window() {
+        int32 at = this.offset();
+        return this.store()[at:at + this.length()];
+    }
 
     /** Identity within its source, for telling a returned buffer from the one handed in. */
     public int32 id() { return this.serial; }

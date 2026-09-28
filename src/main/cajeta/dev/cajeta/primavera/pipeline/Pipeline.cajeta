@@ -95,7 +95,7 @@ public final class Pipeline {
                 j = j - 1;
             }
         } catch (HttpException e) {
-            ctx.respond(e.httpStatus());
+            ctx.fail(e.httpStatus());
             Buffer empty = ctx.take();
             current = empty;
         }

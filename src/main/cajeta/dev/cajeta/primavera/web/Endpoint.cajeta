@@ -1,0 +1,22 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.lang.Slice;
+
+/** One registered endpoint: its body binding mode and the handler of that mode's shape. */
+final class Endpoint {
+
+    int32 mode;
+    (RequestView, Response) -> void plain;
+    (RequestView, JsonBody, Response) -> void json;
+    (RequestView, Slice<int8>, Response) -> void window;
+    BodyHandler owned;
+
+    Endpoint(int32 mode) {
+        this.mode = mode;
+        this.plain = null;
+        this.json = null;
+        this.window = null;
+        this.owned = null;
+        return;
+    }
+}

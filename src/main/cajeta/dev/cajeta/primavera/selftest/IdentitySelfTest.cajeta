@@ -1,0 +1,63 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.lang.String;
+import dev.cajeta.primavera.identity.MemoryUserDirectory;
+import dev.cajeta.primavera.identity.UserDirectory;
+import dev.cajeta.primavera.identity.UserDirectoryException;
+import dev.cajeta.primavera.identity.UserRecord;
+import dev.cajeta.unit.TestRunner;
+
+/**
+ * primavera-web plan 2.1.7 (spec §5.7 to §5.9): the directory mints an id of
+ * its own, resolves by id and by (provider, subject) to the same record,
+ * refuses a second link of one subject, and re-links without rekeying.
+ */
+public final class IdentitySelfTest {
+
+    static int32 createKind(UserDirectory dir, String username, String provider, String subject) {
+        try {
+            UserRecord r #= dir.create(username, provider, subject);
+            return -1;
+        } catch (UserDirectoryException e) {
+            return e.kind();
+        }
+    }
+
+    static void add(TestRunner t) {
+        t.test("the directory mints its own id and resolves it both ways", () -> {
+            MemoryUserDirectory dir = heap MemoryUserDirectory();
+            UserRecord a #= dir.create("ada", "memory", "sub-1");
+            SelfTest.req(a.id().byteLength() > 0 && !a.id().equals("sub-1"), "the application id is minted, not the subject");
+            UserRecord byId #= dir.find(a.id());
+            UserRecord bySub #= dir.findBySubject("memory", "sub-1");
+            SelfTest.req(byId != null && bySub != null, "both lookups find the record");
+            SelfTest.req(byId.id().equals(bySub.id()) && bySub.username().equals("ada"), "both lookups agree");
+            SelfTest.req(dir.find("nope") == null && dir.findBySubject("other", "sub-1") == null,
+                "an unknown id or another provider's subject finds nothing");
+            UserRecord b #= dir.create("bob", "memory", "sub-2");
+            SelfTest.req(!b.id().equals(a.id()), "each create mints a distinct id");
+        });
+
+        t.test("a subject links once per provider, and a username once", () -> {
+            MemoryUserDirectory dir = heap MemoryUserDirectory();
+            UserRecord a #= dir.create("ada", "memory", "sub-1");
+            SelfTest.req(IdentitySelfTest.createKind(dir, "ada2", "memory", "sub-1") == UserDirectoryException.SUBJECT_LINKED(),
+                "a second create for the same subject fails");
+            SelfTest.req(IdentitySelfTest.createKind(dir, "ada", "memory", "sub-9") == UserDirectoryException.USERNAME_TAKEN(),
+                "a second create for the same username fails");
+            SelfTest.req(IdentitySelfTest.createKind(dir, "ada3", "google", "sub-1") == -1,
+                "the same subject at another provider is a different link");
+        });
+
+        t.test("a provider change re-links the subject and keeps the id", () -> {
+            MemoryUserDirectory dir = heap MemoryUserDirectory();
+            UserRecord a #= dir.create("ada", "memory", "sub-1");
+            dir.relink(a.id(), "cognito", "c-77");
+            UserRecord moved #= dir.findBySubject("cognito", "c-77");
+            SelfTest.req(moved != null && moved.id().equals(a.id()), "the record answers at its new link under the same id");
+            SelfTest.req(dir.findBySubject("memory", "sub-1") == null, "the old link is gone");
+            UserRecord again #= dir.create("ada-new", "memory", "sub-1");
+            SelfTest.req(!again.id().equals(a.id()), "the freed subject can link a new record");
+        });
+    }
+}

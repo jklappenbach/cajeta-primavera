@@ -1,0 +1,44 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.lang.String;
+import dev.cajeta.primavera.context.RequestScope;
+import dev.cajeta.primavera.pipeline.Buffer;
+import dev.cajeta.primavera.pipeline.Kind;
+import dev.cajeta.primavera.pipeline.RequestContext;
+import dev.cajeta.primavera.pipeline.Stage;
+
+/**
+ * Binds the body the matched endpoint declares, ROUTED to BOUND (spec
+ * §3.1 to §3.3). A JSON endpoint gets a {@link JsonBody} indexed over the
+ * current buffer in place, bound in the request scope; the view and owned
+ * modes read the buffer at the handler.
+ */
+public final class BindingStage implements Stage {
+
+    Endpoints endpoints;
+
+    public BindingStage(Endpoints endpoints) {
+        this.endpoints #= endpoints;
+        return;
+    }
+
+    public #String name() { String s = "binding"; return #s; }
+    public int32 consumes() { return Kind.ROUTED(); }
+    public int32 produces() { return Kind.BOUND(); }
+
+    /** The request-scope key a JSON body is bound under. */
+    public static String JSON_KEY() { return "dev.cajeta.primavera.web.JsonBody"; }
+
+    public Buffer inbound(Buffer buffer, RequestContext ctx) {
+        RouteMatch m = (RouteMatch) RequestScope.lookup(RouteMatch.KEY());
+        Endpoint e = this.endpoints.at(m.index());
+        if (e.mode == BodyMode.JSON()) {
+            JsonBody body = heap JsonBody();
+            body.bind(buffer.store(), buffer.offset(), buffer.length());
+            RequestScope.store(BindingStage.JSON_KEY(), #body);
+        }
+        return #= buffer;
+    }
+
+    public Buffer outbound(Buffer buffer, RequestContext ctx) { return #= buffer; }
+}

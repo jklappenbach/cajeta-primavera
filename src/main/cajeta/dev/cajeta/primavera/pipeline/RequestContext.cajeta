@@ -1,6 +1,8 @@
 package dev.cajeta.primavera.pipeline;
 
 import cajeta.collection.ArrayList;
+import dev.cajeta.http.HttpRequest;
+import dev.cajeta.http.HttpResponse;
 
 /**
  * One request's ledger (primavera-web spec §7.10 to §7.13): every buffer a
@@ -15,14 +17,31 @@ public final class RequestContext {
     ArrayList<Buffer> ledger;
     int32 statusCode;
     boolean hasResponded;
+    HttpRequest req;
+    HttpResponse res;
 
     public RequestContext(BufferSource source) {
         this.source #= source;
         this.ledger = heap ArrayList<Buffer>();
         this.statusCode = 200;
         this.hasResponded = false;
+        this.req = null;
+        this.res = null;
         return;
     }
+
+    /** Binds the HTTP message this request is, as views the transport owns. */
+    public void bindHttp(HttpRequest q, HttpResponse r) {
+        this.req #= q;
+        this.res #= r;
+        return;
+    }
+
+    /** The request view, or null outside HTTP. */
+    public HttpRequest request() { return this.req; }
+
+    /** The response view, or null outside HTTP. */
+    public HttpResponse response() { return this.res; }
 
     /** A fresh buffer from the source, owned by this ledger; the stage borrows it. */
     public Buffer take() {
@@ -49,6 +68,17 @@ public final class RequestContext {
                 return;
             }
             i = i + 1;
+        }
+        return;
+    }
+
+    /** End the request with a failure status: any response written so far is discarded (spec §7.12). */
+    public void fail(int32 status) {
+        this.statusCode = status;
+        this.hasResponded = true;
+        if (this.res != null) {
+            this.res.reset();
+            this.res.status(status);
         }
         return;
     }

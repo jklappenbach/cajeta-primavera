@@ -1,0 +1,24 @@
+package dev.cajeta.primavera.web;
+
+import dev.cajeta.http.HttpRequest;
+import dev.cajeta.http.HttpResponse;
+import dev.cajeta.primavera.pipeline.BufferSource;
+import dev.cajeta.primavera.pipeline.Pipeline;
+
+/** What the transport's handler closure owns: aliases of the server's pipeline and buffer source. */
+final class Dispatch {
+
+    Pipeline pipeline;
+    BufferSource source;
+
+    Dispatch(Pipeline p, BufferSource s) {
+        this.pipeline #= p;
+        this.source #= s;
+        return;
+    }
+
+    void run(HttpRequest q, HttpResponse r) {
+        WebServer.dispatch(this.pipeline, this.source, q, r);
+        return;
+    }
+}

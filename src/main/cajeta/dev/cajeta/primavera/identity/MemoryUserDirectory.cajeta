@@ -1,0 +1,103 @@
+package dev.cajeta.primavera.identity;
+
+import cajeta.collection.HashMap;
+import cajeta.concurrent.Lock;
+import cajeta.concurrent.LockGuard;
+import cajeta.lang.Guid;
+import cajeta.lang.String;
+
+/**
+ * The in-memory user directory, for tests and the sample's HTTP phase
+ * (primavera-web spec §5.8). One lock guards every operation. A durable
+ * directory is application configuration over a store, never this.
+ */
+public final class MemoryUserDirectory implements UserDirectory {
+
+    Lock lock;
+    HashMap<String, UserRecord> byId;
+    HashMap<String, String> idByLink;
+    HashMap<String, String> idByName;
+
+    public MemoryUserDirectory() {
+        this.lock = heap Lock();
+        this.byId = heap HashMap<String, UserRecord>();
+        this.idByLink = heap HashMap<String, String>();
+        this.idByName = heap HashMap<String, String>();
+        return;
+    }
+
+    static #String linkKey(String provider, String subject) {
+        String key = provider + "\n" + subject;
+        return #key;
+    }
+
+    public #UserRecord create(String username, String provider, String subject) {
+        LockGuard g #= this.lock.acquire();
+        String link #= MemoryUserDirectory.linkKey(provider, subject);
+        if (this.idByLink.containsKey(link)) {
+            String why = "subject is already linked at " + provider;
+            throw heap UserDirectoryException(UserDirectoryException.SUBJECT_LINKED(), #why);
+        }
+        if (this.idByName.containsKey(username)) {
+            String taken = "username is taken";
+            throw heap UserDirectoryException(UserDirectoryException.USERNAME_TAKEN(), #taken);
+        }
+        Guid minted #= Guid.random();
+        String id #= minted.toString();
+        UserRecord rec = heap UserRecord(id, username, provider, subject);
+        UserRecord out #= rec.copy();
+        String idKey = "" + id;
+        String linkId = "" + id;
+        String nameKey = "" + username;
+        String nameId = "" + id;
+        this.byId.put(#idKey, #rec);
+        this.idByLink.put(#link, #linkId);
+        this.idByName.put(#nameKey, #nameId);
+        return #out;
+    }
+
+    public #UserRecord find(String id) {
+        LockGuard g #= this.lock.acquire();
+        UserRecord rec = this.byId.get(id);
+        if (rec == null) {
+            return null;
+        }
+        return rec.copy();
+    }
+
+    public #UserRecord findBySubject(String provider, String subject) {
+        LockGuard g #= this.lock.acquire();
+        String link #= MemoryUserDirectory.linkKey(provider, subject);
+        String id = this.idByLink.get(link);
+        if (id == null) {
+            return null;
+        }
+        UserRecord rec = this.byId.get(id);
+        if (rec == null) {
+            return null;
+        }
+        return rec.copy();
+    }
+
+    public void relink(String id, String provider, String subject) {
+        LockGuard g #= this.lock.acquire();
+        UserRecord rec = this.byId.get(id);
+        if (rec == null) {
+            String unknown = "no record for that id";
+            throw heap UserDirectoryException(UserDirectoryException.UNKNOWN_ID(), #unknown);
+        }
+        String link #= MemoryUserDirectory.linkKey(provider, subject);
+        if (this.idByLink.containsKey(link)) {
+            String why = "subject is already linked at " + provider;
+            throw heap UserDirectoryException(UserDirectoryException.SUBJECT_LINKED(), #why);
+        }
+        String old #= MemoryUserDirectory.linkKey(rec.provider(), rec.subject());
+        this.idByLink.remove(old);
+        UserRecord moved = heap UserRecord(rec.id(), rec.username(), provider, subject);
+        String linkId = "" + id;
+        this.idByLink.put(#link, #linkId);
+        String idKey = "" + id;
+        this.byId.put(#idKey, #moved);
+        return;
+    }
+}

@@ -1,0 +1,25 @@
+package dev.cajeta.primavera.identity;
+
+import cajeta.lang.String;
+
+/**
+ * The application's user directory (primavera-web spec §5.7 to §5.9). The
+ * application mints its own id at create and keys its records by it; the
+ * provider's subject is a link, unique per provider, so a provider change
+ * re-links subjects instead of rekeying the system. Inputs are copied and
+ * returns are owned snapshots.
+ */
+public interface UserDirectory {
+
+    /** A new record with a freshly minted id; raises when the subject is linked or the username taken. */
+    #UserRecord create(String username, String provider, String subject);
+
+    /** The record for an application id, or null. */
+    #UserRecord find(String id);
+
+    /** The record linked to `subject` at `provider`, or null. */
+    #UserRecord findBySubject(String provider, String subject);
+
+    /** Moves a record's link to another provider's subject; raises when that subject is linked. */
+    void relink(String id, String provider, String subject);
+}

@@ -1,0 +1,225 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.codec.json.JsonIndex;
+import cajeta.lang.Slice;
+import cajeta.lang.String;
+import dev.cajeta.http.status.BadRequestException;
+
+/**
+ * A JSON object body indexed in place (primavera-web spec §3.2): the
+ * structural index points into the request's input buffer, top-level fields
+ * are found through it, and nothing is materialized until a copying reader
+ * is called. Every window is valid for the request only; a value that must
+ * outlive it is copied with a `...Copy` reader (§3.5).
+ */
+public final class JsonBody {
+
+    int8[] store;
+    int32[] idx;
+    int32 count;
+
+    public JsonBody() {
+        this.store = null;
+        this.idx = heap int32[256];
+        this.count = 0;
+        return;
+    }
+
+    /** Indexes `store[off .. off + len)`; raises 400 when it is not a JSON object. */
+    public void bind(int8[] store, int32 off, int32 len) {
+        this.store #= store;
+        if (this.idx.count() < (int64) (len + 16)) {
+            this.idx = heap int32[len * 2 + 16];
+        }
+        this.count = JsonIndex.buildRange(store, (int64) off, (int64) (off + len), this.idx);
+        if (this.count < 2 || store[this.idx[0]] != (int8) 123
+                || store[this.idx[this.count - 1]] != (int8) 125) {
+            this.count = 0;
+            throw heap BadRequestException("the body is not a JSON object");
+        }
+        return;
+    }
+
+    int32 valueAt(String name) {
+        int32 ci = 1;
+        while (ci + 2 < this.count) {
+            int32 p = this.idx[ci];
+            int8 ch = this.store[p];
+            if (ch == (int8) 44) {
+                ci = ci + 1;
+                continue;
+            }
+            if (ch != (int8) 34) {
+                return -1;
+            }
+            if (JsonIndex.keyEq(this.store, (int64) p, name)) {
+                return ci + 2;
+            }
+            ci = JsonIndex.skipValue(this.store, this.idx, ci + 2);
+        }
+        return -1;
+    }
+
+    int32 stringEnd(int32 open) {
+        int32 i = open + 1;
+        while (i < this.store.count()) {
+            int8 ch = this.store[i];
+            if (ch == (int8) 92) {
+                i = i + 2;
+                continue;
+            }
+            if (ch == (int8) 34) {
+                return i;
+            }
+            i = i + 1;
+        }
+        return i;
+    }
+
+    /** True when the object has a top-level field `name`. */
+    public boolean has(String name) {
+        return this.valueAt(name) >= 0;
+    }
+
+    /** True when field `name` is present and a string. */
+    public boolean isString(String name) {
+        int32 v = this.valueAt(name);
+        return v >= 0 && this.store[this.idx[v]] == (int8) 34;
+    }
+
+    /** The raw bytes of string field `name` with escapes as sent, or an empty window. */
+    public Slice<int8> string(String name) {
+        int32 v = this.valueAt(name);
+        if (v < 0 || this.store[this.idx[v]] != (int8) 34) {
+            return this.store[0:0];
+        }
+        int32 open = this.idx[v];
+        return this.store[open + 1:this.stringEnd(open)];
+    }
+
+    /** A decoded copy of string field `name`, or null when absent or not a string. */
+    public #String stringCopy(String name) {
+        int32 v = this.valueAt(name);
+        if (v < 0 || this.store[this.idx[v]] != (int8) 34) {
+            return null;
+        }
+        int32 open = this.idx[v];
+        return JsonBody.decode(this.store, open + 1, this.stringEnd(open));
+    }
+
+    /** Integer field `name`, or `fallback` when absent or not a number. */
+    public int64 int64Of(String name, int64 fallback) {
+        int32 v = this.valueAt(name);
+        if (v < 0) {
+            return fallback;
+        }
+        int8 ch = this.store[this.idx[v]];
+        if (ch != (int8) 45 && (ch < (int8) 48 || ch > (int8) 57)) {
+            return fallback;
+        }
+        return JsonIndex.decodeI64(this.store, (int64) this.idx[v]);
+    }
+
+    /** Boolean field `name`, or `fallback` when absent or not a boolean. */
+    public boolean boolOf(String name, boolean fallback) {
+        int32 v = this.valueAt(name);
+        if (v < 0) {
+            return fallback;
+        }
+        int8 ch = this.store[this.idx[v]];
+        if (ch == (int8) 116) {
+            return true;
+        }
+        if (ch == (int8) 102) {
+            return false;
+        }
+        return fallback;
+    }
+
+    static int32 hex(int8 ch) {
+        if (ch >= (int8) 48 && ch <= (int8) 57) {
+            return (int32) ch - 48;
+        }
+        if (ch >= (int8) 97 && ch <= (int8) 102) {
+            return (int32) ch - 87;
+        }
+        if (ch >= (int8) 65 && ch <= (int8) 70) {
+            return (int32) ch - 55;
+        }
+        throw heap BadRequestException("bad \\u escape in a JSON string");
+    }
+
+    static int32 unit(int8[] b, int32 at, int32 end) {
+        if (at + 4 > end) {
+            throw heap BadRequestException("short \\u escape in a JSON string");
+        }
+        return JsonBody.hex(b[at]) * 4096 + JsonBody.hex(b[at + 1]) * 256
+            + JsonBody.hex(b[at + 2]) * 16 + JsonBody.hex(b[at + 3]);
+    }
+
+    static int32 putUtf8(int8[] out, int32 n, int32 cp) {
+        if (cp < 128) {
+            out[n] = (int8) cp;
+            return n + 1;
+        }
+        if (cp < 2048) {
+            out[n] = (int8) (192 + cp / 64);
+            out[n + 1] = (int8) (128 + cp % 64);
+            return n + 2;
+        }
+        if (cp < 65536) {
+            out[n] = (int8) (224 + cp / 4096);
+            out[n + 1] = (int8) (128 + (cp / 64) % 64);
+            out[n + 2] = (int8) (128 + cp % 64);
+            return n + 3;
+        }
+        out[n] = (int8) (240 + cp / 262144);
+        out[n + 1] = (int8) (128 + (cp / 4096) % 64);
+        out[n + 2] = (int8) (128 + (cp / 64) % 64);
+        out[n + 3] = (int8) (128 + cp % 64);
+        return n + 4;
+    }
+
+    /** Decodes the JSON string content `b[from .. to)` into a new String. */
+    public static #String decode(int8[] b, int32 from, int32 to) {
+        int8[] out = heap int8[to - from];
+        int32 n = 0;
+        int32 i = from;
+        while (i < to) {
+            int8 ch = b[i];
+            if (ch != (int8) 92) {
+                out[n] = ch;
+                n = n + 1;
+                i = i + 1;
+                continue;
+            }
+            if (i + 1 >= to) {
+                throw heap BadRequestException("a JSON string ends in a backslash");
+            }
+            int8 e = b[i + 1];
+            i = i + 2;
+            if (e == (int8) 110) { out[n] = (int8) 10; n = n + 1; }
+            else if (e == (int8) 116) { out[n] = (int8) 9; n = n + 1; }
+            else if (e == (int8) 114) { out[n] = (int8) 13; n = n + 1; }
+            else if (e == (int8) 98) { out[n] = (int8) 8; n = n + 1; }
+            else if (e == (int8) 102) { out[n] = (int8) 12; n = n + 1; }
+            else if (e == (int8) 117) {
+                int32 cp = JsonBody.unit(b, i, to);
+                i = i + 4;
+                if (cp >= 55296 && cp < 56320 && i + 6 <= to
+                        && b[i] == (int8) 92 && b[i + 1] == (int8) 117) {
+                    int32 lo = JsonBody.unit(b, i + 2, to);
+                    if (lo >= 56320 && lo < 57344) {
+                        cp = 65536 + (cp - 55296) * 1024 + (lo - 56320);
+                        i = i + 6;
+                    }
+                }
+                n = JsonBody.putUtf8(out, n, cp);
+            } else {
+                out[n] = e;
+                n = n + 1;
+            }
+        }
+        return heap String(#out, n);
+    }
+}
