@@ -63,8 +63,13 @@ live pipeline.
 | `BufferSource` | `take()`, `release(#buffer)`, `allocations()`, `idle()`, `bufferSize()` |
 | `PipelineException` | a chain that cannot be built |
 
-The standard HTTP stages and the standard pipelines arrive with the
-cajeta-http buffer seam. Until then the pipeline is exercised in memory by
-the self-test, which proves the kinds check, the buffer accounting across
-runs and on a throw, the status mapping, the early response and the reverse
-walk.
+The standard HTTP stages (routing, binding, handler) and the standard HTTP
+pipeline are in `dev.cajeta.primavera.web`. The seam to cajeta-http is the
+handler itself. `WebServer` installs one `(HttpRequest, HttpResponse)` handler
+that lends the request body's window in the connection's input buffer as the
+pipeline's first buffer and runs the pipeline over the request and response
+views. Framing, keep-alive and the buffer pool stay in cajeta-http.
+
+The self-test also runs the pipeline in memory, which proves the kinds check,
+the buffer accounting across runs and on a throw, the status mapping, the
+early response and the reverse walk.
