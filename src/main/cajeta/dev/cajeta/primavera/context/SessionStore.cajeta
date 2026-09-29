@@ -92,7 +92,7 @@ public class SessionStore {
      * source to restore production behavior.
      */
     public void setTimeSource(TimeSource source) {
-        this.clock = source;
+        this.clock #= source;
     }
 
     /** Expire sessions idle longer than `millis` (0 disables, the default). */
