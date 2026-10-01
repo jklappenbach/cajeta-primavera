@@ -33,7 +33,7 @@
         // src/main until the pin moved. Keep this in step with the
         // `cajeta-version` in .github/workflows/release.yml.
         "toolchain": {
-            "version": "0.30.1",
+            "version": "0.32.0",
             "from":    "https://olla.cajeta.dev"
         },
 
@@ -49,7 +49,7 @@
         // selftest that imports it compiles as part of src/main (no separate
         // test source root yet). Move it back when either lands.
         "dependencies": {
-            "dev.cajeta.logging": "0.8.*",
+            "dev.cajeta.logging": "0.8.1",
             "dev.cajeta.http":    "0.4.0",
             "dev.cajeta.unit":    "0.3.*"
         },
