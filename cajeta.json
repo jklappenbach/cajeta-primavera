@@ -15,7 +15,7 @@
 
     "details": {
         "name":               "dev.cajeta.primavera",
-        "version":            "0.2.0",
+        "version":            "0.2.1",
         "description":        "primavera — enterprise framework for Cajeta (components, web, request/session scope)",
         "license":            "Apache-2.0",
         "authors":            ["Julian Klappenbach"],
@@ -33,7 +33,7 @@
         // src/main until the pin moved. Keep this in step with the
         // `cajeta-version` in .github/workflows/release.yml.
         "toolchain": {
-            "version": "0.32.0",
+            "version": "0.35.0",
             "from":    "https://olla.cajeta.dev"
         },
 
@@ -49,9 +49,9 @@
         // selftest that imports it compiles as part of src/main (no separate
         // test source root yet). Move it back when either lands.
         "dependencies": {
-            "dev.cajeta.logging": "0.8.1",
-            "dev.cajeta.http":    "0.4.0",
-            "dev.cajeta.unit":    "0.3.*"
+            "dev.cajeta.logging": "0.8.3",
+            "dev.cajeta.http":    "0.5.0",
+            "dev.cajeta.unit":    "0.3.3"
         },
 
         "dev-dependencies": {},
