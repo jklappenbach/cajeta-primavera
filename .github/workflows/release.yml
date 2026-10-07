@@ -23,7 +23,7 @@ jobs:
       # publish would have been built by a toolchain eleven minors behind the
       # one the sources were written against.
       #
-      # v0.35.0 is the newest release, and the version this package is gated
+      # v0.36.0 is the newest release, and the version this package is gated
       # against: `cajeta test` reports 28 passed, 0 failed, 0 skipped, and the
       # register-user sample passes 41 of 41 checks.
       #
@@ -33,7 +33,7 @@ jobs:
       # aa382ae0 and efa2a01a, confirmed with `git log -S` and
       # `git tag --contains`). What hid them here was the manifest's stale
       # toolchain pin of 0.9.2, which no release ever carried.
-      cajeta-version: v0.35.0
+      cajeta-version: v0.36.0
       # The manifest's `test` task builds with `"profile": "test"` and runs the
       # result, so the suite is self-contained and CI can call it directly.
       test-command: cajeta test
