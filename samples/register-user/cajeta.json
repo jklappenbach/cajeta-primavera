@@ -13,13 +13,13 @@
 
     "settings": {
         "toolchain": {
-            "version": "0.36.0",
+            "version": "0.38.0",
             "from":    "https://olla.cajeta.dev"
         },
         "capabilities": [],
         "dependencies": {
-            "dev.cajeta.primavera": "0.2.2",
-            "dev.cajeta.http":      "0.5.1",
+            "dev.cajeta.primavera": "0.2.3",
+            "dev.cajeta.http":      "0.5.2",
             "dev.cajeta.cloud":     "0.2.2"
         },
         "dev-dependencies": {},
