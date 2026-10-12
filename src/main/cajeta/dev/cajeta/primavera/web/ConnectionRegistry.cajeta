@@ -1,0 +1,140 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.concurrent.Channel;
+import cajeta.concurrent.Lock;
+import cajeta.concurrent.LockGuard;
+import cajeta.lang.String;
+
+/**
+ * The server's open WebSocket connections, addressed by id (primavera-web
+ * spec §6.4, the single-node minimum of `Connections.md`). A connection is in
+ * the registry from open to close. Addressing by principal joins with the
+ * security phase.
+ *
+ * A send only queues: each connection has its own writer fiber, run under
+ * {@link WebServer#serve}, so a peer that stops reading stalls its own writer
+ * and nothing else. Its queue then fills, and it is closed (spec §6.5).
+ */
+public final class ConnectionRegistry {
+    Lock gate;
+    // Borrows of the open connections: each is owned by its transport, and
+    // taking one out of the registry must never free it.
+    Connection[] live;
+    int32 liveCount;
+    Channel<Connection> opened;
+    int64 next;
+    int32 lastCode;
+    int32 peak;
+
+    public ConnectionRegistry() {
+        this.gate = heap Lock();
+        this.live = heap Connection[16];
+        this.liveCount = 0;
+        this.opened = heap Channel<Connection>(64);
+        this.next = 0;
+        this.lastCode = 0;
+        this.peak = 0;
+        return;
+    }
+
+    int64 nextId() {
+        LockGuard g #= this.gate.acquire();
+        this.next = this.next + 1;
+        return this.next;
+    }
+
+    // `c` is open: address it, and hand it to the writer dispatcher.
+    void add(^Connection c) {
+        {
+            LockGuard g #= this.gate.acquire();
+            if (this.liveCount == this.live.count()) {
+                Connection[] grown = heap Connection[this.liveCount * 2];
+                int32 j = 0;
+                while (j < this.liveCount) {
+                    grown[j] = this.live[j];
+                    j = j + 1;
+                }
+                this.live = #grown;
+            }
+            this.live[this.liveCount] = c;
+            this.liveCount = this.liveCount + 1;
+        }
+        this.opened.send(c);
+        return;
+    }
+
+    // Takes `c` out when it closes, so no send reaches it again.
+    void closed(^Connection c, int32 code) {
+        LockGuard g #= this.gate.acquire();
+        int32 i = 0;
+        while (i < this.liveCount) {
+            if (this.live[i].id() == c.id()) {
+                this.liveCount = this.liveCount - 1;
+                this.live[i] = this.live[this.liveCount];
+                this.live[this.liveCount] = null;
+                i = this.liveCount;
+            } else {
+                i = i + 1;
+            }
+        }
+        this.lastCode = code;
+        return;
+    }
+
+    void notePeak(int32 queued) {
+        if (queued > this.peak) {
+            this.peak = queued;
+        }
+        return;
+    }
+
+    // No connection opens after this; each open one is closed.
+    void shutdown() {
+        this.opened.close();
+        LockGuard g #= this.gate.acquire();
+        int32 i = 0;
+        while (i < this.liveCount) {
+            this.live[i].close(1001);
+            i = i + 1;
+        }
+        return;
+    }
+
+    /** Open connections. */
+    public int32 count() {
+        LockGuard g #= this.gate.acquire();
+        return this.liveCount;
+    }
+
+    /** Queues `text` for connection `id`; false when it is not open. */
+    public boolean send(int64 id, String text) {
+        LockGuard g #= this.gate.acquire();
+        boolean sent = false;
+        int32 i = 0;
+        while (i < this.liveCount) {
+            Connection c = this.live[i];
+            if (c.id() == id) {
+                sent = c.enqueue(text);
+            }
+            i = i + 1;
+        }
+        return sent;
+    }
+
+    /** Queues `text` for every open connection. */
+    public void broadcast(String text) {
+        LockGuard g #= this.gate.acquire();
+        int32 i = 0;
+        while (i < this.liveCount) {
+            this.live[i].enqueue(text);
+            i = i + 1;
+        }
+        return;
+    }
+
+    /** The close code of the connection that closed last, or 0. */
+    public int32 lastCloseCode() { return this.lastCode; }
+
+    /** The most messages any connection has had queued. */
+    public int32 peakQueued() { return this.peak; }
+}

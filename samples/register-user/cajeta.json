@@ -19,7 +19,7 @@
         "capabilities": [],
         "dependencies": {
             "dev.cajeta.primavera": "0.2.4",
-            "dev.cajeta.http":      "0.5.3",
+            "dev.cajeta.http":      "0.6.0",
             "dev.cajeta.cloud":     "0.2.4"
         },
         "dev-dependencies": {},

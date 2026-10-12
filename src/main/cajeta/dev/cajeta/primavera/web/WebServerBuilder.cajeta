@@ -17,12 +17,14 @@ public final class WebServerBuilder {
     String addr;
     int32 bytes;
     Endpoints api;
+    WebSocketEndpoints sockets;
     ArrayList<Stage> leading;
 
     public WebServerBuilder() {
         this.addr = "127.0.0.1:0";
         this.bytes = 65536;
         this.api = null;
+        this.sockets = null;
         this.leading = heap ArrayList<Stage>();
         return;
     }
@@ -43,6 +45,12 @@ public final class WebServerBuilder {
         return this;
     }
 
+    /** WebSocket paths, each an upgrading GET route on the HTTP pipeline (spec §6). */
+    public WebServerBuilder websockets(#WebSocketEndpoints ws) {
+        this.sockets #= ws;
+        return this;
+    }
+
     /** A stage that runs ahead of the standard ones, in call order. */
     public WebServerBuilder stage(#Stage s) {
         this.leading.add(#s);
@@ -54,6 +62,11 @@ public final class WebServerBuilder {
         WebServer ws = heap WebServer();
         if (this.api == null) {
             this.api = heap Endpoints();
+        }
+        if (this.sockets != null) {
+            ws.sockets #= this.sockets;
+            this.sockets = null;
+            ws.sockets.install(this.api, ws.registry);
         }
         ws.endpoints #= this.api;
         this.api = null;

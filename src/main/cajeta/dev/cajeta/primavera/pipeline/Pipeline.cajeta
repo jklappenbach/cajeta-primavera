@@ -16,6 +16,9 @@ public final class Pipeline {
 
     BufferSource source;
     ArrayList<Stage> stages;
+
+    /** The number of stages, fixed once the pipeline is built (spec §7.17). */
+    public int32 count() { return this.stages.count(); }
     boolean built;
 
     public Pipeline(BufferSource source) {

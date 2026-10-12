@@ -322,6 +322,7 @@ public class SelfTest {
         SelfTest.addFiberTests(t);
         PipelineSelfTest.add(t);
         WebSelfTest.add(t);
+        WsSelfTest.add(t);
         IdentitySelfTest.add(t);
 
         return t.summary();

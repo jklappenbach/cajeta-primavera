@@ -1,0 +1,18 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.lang.String;
+
+/** One WebSocket path and the handler its JSON messages go to. */
+public final class WebSocketEndpoint {
+    String path;
+    (Connection, JsonBody) -> void json;
+
+    WebSocketEndpoint(String path, (Connection, JsonBody) -> void json) {
+        this.path #= path.substring(0, path.byteLength());
+        this.json #= json;
+        return;
+    }
+
+    /** The path the upgrade is accepted on. */
+    public String path() { return this.path; }
+}

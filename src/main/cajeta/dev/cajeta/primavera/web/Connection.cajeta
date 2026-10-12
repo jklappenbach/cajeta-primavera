@@ -1,0 +1,226 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.aot.Scope;
+import cajeta.concurrent.Channel;
+import cajeta.concurrent.Lock;
+import cajeta.concurrent.LockGuard;
+import cajeta.lang.String;
+import dev.cajeta.http.status.BadRequestException;
+import dev.cajeta.http.ws.MessageTooLargeException;
+import dev.cajeta.http.ws.WebSocketConnection;
+import dev.cajeta.http.ws.WebSocketHandler;
+import dev.cajeta.http.ws.WsMessage;
+
+/**
+ * One open WebSocket connection, and the anchor of the `Connection` scope
+ * (component-scopes spec §10.3): a `@Component(scope = "Connection")` lives
+ * from open to close. Each message runs in a `Message` scope inside it
+ * (§10.4), indexed as JSON over the connection's buffer and handed to its
+ * path's handler (primavera-web spec §6.2).
+ *
+ * A handler that throws closes the connection (spec §7.12): a body that is
+ * not a JSON object with 1007, an oversized message with 1009, a
+ * {@link CloseException} with its code, anything else with 1011. The peer
+ * gets the code and no detail.
+ *
+ * Sends are queued, at most `bound` deep, and written by the connection's
+ * writer fiber. A send that finds the queue full aborts the connection with
+ * the overflow code (spec §6.5).
+ */
+@Scope("Connection")
+public class Connection implements WebSocketHandler {
+    int64 connId;
+    ConnectionRegistry registry;
+    WebSocketEndpoint endpoint;
+    WebSocketConnection ws;
+    JsonBody body;
+
+    Lock gate;
+    SendSlot[] ring;
+    int32 head;
+    int32 queued;
+    int32 bound;
+    int32 overflow;
+    boolean signalled;
+    boolean closing;
+    boolean writing;
+    Channel<int32> wake;
+    Channel<int32> done;
+
+    // The registry and endpoint belong to the server and outlive the
+    // connection, so they are kept as borrows.
+    Connection(int64 id, ^ConnectionRegistry registry, ^WebSocketEndpoint endpoint,
+               int32 bound, int32 overflow) {
+        this.connId = id;
+        this.registry = registry;
+        this.endpoint = endpoint;
+        this.ws = null;
+        this.body = heap JsonBody();
+        this.gate = heap Lock();
+        this.ring = heap SendSlot[bound];
+        int32 i = 0;
+        while (i < bound) {
+            this.ring[i] = heap SendSlot();
+            i = i + 1;
+        }
+        this.head = 0;
+        this.queued = 0;
+        this.bound = bound;
+        this.overflow = overflow;
+        this.signalled = false;
+        this.closing = false;
+        this.writing = false;
+        this.wake = heap Channel<int32>(1);
+        this.done = heap Channel<int32>(1);
+        return;
+    }
+
+    /** The connection's id in its server's {@link ConnectionRegistry}. */
+    public int64 id() { return this.connId; }
+
+    /** Queues `text` for the peer. */
+    public void send(String text) {
+        this.enqueue(text);
+        return;
+    }
+
+    /** Closes the connection with `code` and no reason. */
+    public void close(int32 code) {
+        if (this.ws != null) {
+            String none = "";
+            try {
+                this.ws.close(code, none);
+            } catch (Exception e) {
+            }
+        }
+        return;
+    }
+
+    public void onConnect(WebSocketConnection conn) {
+        this.ws #= conn;
+        this.registry.add(this);
+        return;
+    }
+
+    @Scope(value = "Message", within = "Connection")
+    public void onMessage(WebSocketConnection conn, WsMessage message) {
+        try {
+            this.body.bind(message.bytes(), 0, message.length());
+            (Connection, JsonBody) -> void h = this.endpoint.json;
+            h(this, this.body);
+        } catch (CloseException e) {
+            this.close(e.code);
+        } catch (BadRequestException e) {
+            this.close(1007);
+        } catch (MessageTooLargeException e) {
+            this.close(1009);
+        } catch (Exception e) {
+            this.close(1011);
+        }
+        return;
+    }
+
+    public void onClose(WebSocketConnection conn, int32 code) {
+        this.registry.closed(this, code);
+        boolean wait = false;
+        {
+            LockGuard g #= this.gate.acquire();
+            this.closing = true;
+            wait = this.writing;
+        }
+        this.wake.close();
+        if (wait) {
+            this.done.receive();
+        }
+        this.ws = null;
+        return;
+    }
+
+    // Copies `text` into the next slot and wakes the writer. Never parks: a
+    // full queue aborts the connection instead. Returns whether it queued.
+    boolean enqueue(String text) {
+        boolean abort = false;
+        boolean queuedIt = false;
+        {
+            LockGuard g #= this.gate.acquire();
+            if (this.closing) {
+                queuedIt = false;
+            } else if (this.queued == this.bound) {
+                this.closing = true;
+                abort = true;
+            } else {
+                int32 at = (this.head + this.queued) % this.bound;
+                this.ring[at].fill(text);
+                this.queued = this.queued + 1;
+                this.registry.notePeak(this.queued);
+                queuedIt = true;
+                if (!this.signalled) {
+                    this.signalled = true;
+                    this.wake.send(1);
+                }
+            }
+        }
+        if (abort) {
+            this.ws.abort(this.overflow);
+            this.wake.close();
+        }
+        return queuedIt;
+    }
+
+    // The writer fiber's body: sends what is queued, oldest first, until
+    // the connection closes.
+    void writeLoop() {
+        boolean going = true;
+        {
+            LockGuard g #= this.gate.acquire();
+            if (this.closing) {
+                going = false;
+            } else {
+                this.writing = true;
+            }
+        }
+        while (going) {
+            if (!this.wake.receive().isPresent()) {
+                going = false;
+            } else {
+                {
+                    LockGuard g #= this.gate.acquire();
+                    this.signalled = false;
+                }
+                going = this.drain();
+            }
+        }
+        this.done.send(1);
+        return;
+    }
+
+    // Sends until the queue is empty; false once a send fails.
+    boolean drain() {
+        boolean more = true;
+        boolean ok = true;
+        while (more && ok) {
+            SendSlot s = null;
+            {
+                LockGuard g #= this.gate.acquire();
+                if (this.queued == 0) {
+                    more = false;
+                } else {
+                    s = this.ring[this.head];
+                }
+            }
+            if (more) {
+                try {
+                    this.ws.sendText(s.bytes, 0, s.len);
+                } catch (Exception e) {
+                    ok = false;
+                }
+                if (ok) {
+                    LockGuard g #= this.gate.acquire();
+                    this.head = (this.head + 1) % this.bound;
+                    this.queued = this.queued - 1;
+                }
+            }
+        }
+        return ok;
+    }
+}

@@ -50,7 +50,7 @@
         // test source root yet). Move it back when either lands.
         "dependencies": {
             "dev.cajeta.logging": "0.8.6",
-            "dev.cajeta.http":    "0.5.3",
+            "dev.cajeta.http":    "0.6.0",
             "dev.cajeta.unit":    "0.3.6"
         },
 

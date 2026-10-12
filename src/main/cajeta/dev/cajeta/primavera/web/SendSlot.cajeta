@@ -1,0 +1,29 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.lang.String;
+
+/** One queued outbound message: its UTF-8 bytes, in an array the slot keeps. */
+final class SendSlot {
+    int8[] bytes;
+    int32 len;
+
+    SendSlot() {
+        this.bytes = heap int8[0];
+        this.len = 0;
+        return;
+    }
+
+    void fill(String text) {
+        int32 n = text.byteLength();
+        if (this.bytes.count() < n) {
+            this.bytes = heap int8[n];
+        }
+        int32 i = 0;
+        while (i < n) {
+            this.bytes[i] = text.byteAt(i);
+            i = i + 1;
+        }
+        this.len = n;
+        return;
+    }
+}

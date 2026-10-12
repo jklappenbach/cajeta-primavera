@@ -1,0 +1,33 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.aot.Component;
+import cajeta.concurrent.AtomicInt32;
+
+/** A `Connection` component that counts its builds and drops, for the WebSocket tests. */
+@Component(scope = "Connection")
+public class ConnectionProbe {
+    static AtomicInt32 builds = heap AtomicInt32(0);
+    static AtomicInt32 drops = heap AtomicInt32(0);
+
+    public int32 tag;
+    public int32 seen;
+
+    public ConnectionProbe() {
+        this.tag = ConnectionProbe.builds.fetchAdd(1) + 1;
+        this.seen = 0;
+        return;
+    }
+
+    public ~ConnectionProbe() {
+        ConnectionProbe.drops.fetchAdd(1);
+    }
+
+    public static void reset() {
+        ConnectionProbe.builds.store(0);
+        ConnectionProbe.drops.store(0);
+        return;
+    }
+
+    public static int32 built() { return ConnectionProbe.builds.load(); }
+    public static int32 dropped() { return ConnectionProbe.drops.load(); }
+}

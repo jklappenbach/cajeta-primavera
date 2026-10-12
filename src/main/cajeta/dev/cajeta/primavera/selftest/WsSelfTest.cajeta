@@ -1,0 +1,275 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.concurrent.Fiber;
+import cajeta.io.net.SocketAddress;
+import cajeta.io.net.TcpStream;
+import cajeta.lang.String;
+import cajeta.time.Duration;
+import dev.cajeta.http.Bytes;
+import dev.cajeta.http.ws.ConnectionClosedException;
+import dev.cajeta.http.ws.WebSocket;
+import dev.cajeta.http.ws.WsMessage;
+import dev.cajeta.primavera.web.CloseException;
+import dev.cajeta.primavera.web.Connection;
+import dev.cajeta.primavera.web.Endpoints;
+import dev.cajeta.primavera.web.JsonBody;
+import dev.cajeta.primavera.web.RequestView;
+import dev.cajeta.primavera.web.Response;
+import dev.cajeta.primavera.web.WebServer;
+import dev.cajeta.primavera.web.WebServerBuilder;
+import dev.cajeta.primavera.web.WebSocketEndpoints;
+import dev.cajeta.unit.TestRunner;
+
+/**
+ * primavera-web plan Unit 4 over a live server: the HTTP and WebSocket
+ * pipelines on one connection, the close-code catalogue, a `Connection`
+ * scope, the registry, and the bounded send queue (spec §6, §7.12, §7.17).
+ */
+public final class WsSelfTest {
+    static WebServer WEB;
+    static int32 echoed;
+    static int32 probeTag;
+    static int32 probeSame;
+    static int64 lastId;
+
+    // An echo of a JSON field, through a Connection component.
+    static void echo(Connection c, JsonBody b) {
+        ConnectionProbe p = ConnectionProbe.__cajeta_inject();
+        if (WsSelfTest.probeTag == 0) {
+            WsSelfTest.probeTag = p.tag;
+        } else if (WsSelfTest.probeTag == p.tag) {
+            WsSelfTest.probeSame = WsSelfTest.probeSame + 1;
+        }
+        WsSelfTest.lastId = c.id();
+        WsSelfTest.echoed = WsSelfTest.echoed + 1;
+        String v #= b.stringCopy("v");
+        c.send("{\"v\":\"" + v + "\"}");
+        return;
+    }
+
+    static void fail(Connection c, JsonBody b) {
+        String kind #= b.stringCopy("kind");
+        if (kind.equals("custom")) {
+            throw heap CloseException(4001);
+        }
+        throw heap Exception("a handler fault");
+    }
+
+    static void hello(RequestView q, Response r) {
+        r.text(200, "hello");
+        return;
+    }
+
+    static #WebServer server(int32 queueBound) {
+        Endpoints api = heap Endpoints();
+        api.route("GET", "/hello", (RequestView q, Response r) -> WsSelfTest.hello(q, r));
+        WebSocketEndpoints ws = heap WebSocketEndpoints();
+        ws.queueBound(queueBound);
+        ws.overflowCode(1008);
+        ws.json("/echo", (Connection c, JsonBody b) -> WsSelfTest.echo(c, b));
+        ws.json("/fail", (Connection c, JsonBody b) -> WsSelfTest.fail(c, b));
+        ws.json("/events", (Connection c, JsonBody b) -> WsSelfTest.echo(c, b));
+        WebServerBuilder bld #= WebServer.builder();
+        bld.bind("127.0.0.1:0");
+        bld.endpoints(#api);
+        bld.websockets(#ws);
+        return bld.build();
+    }
+
+    static async int32 serve(WebServer web) {
+        web.serve();
+        return 1;
+    }
+
+    static int32 closeCodeFor(String url, String body) {
+        WebSocket ws #= WebSocket.connect(url);
+        ws.send(body);
+        try {
+            WsMessage m #= ws.receive();
+        } catch (ConnectionClosedException e) {
+            return e.closeCode;
+        }
+        return 0;
+    }
+
+    static async int32 drive(int32 port, WebServer web) {
+        String base = "ws://127.0.0.1:" + port;
+        int32 failures = 0;
+        int32 stages = web.pipeline().count();
+
+        // 4.1.0 and 4.1.3: echo through a Connection component, then HTTP on the same server.
+        ConnectionProbe.reset();
+        WsSelfTest.probeTag = 0;
+        WsSelfTest.probeSame = 0;
+        WebSocket ws #= WebSocket.connect(base + "/echo");
+        int32 i = 0;
+        boolean right = true;
+        while (i < 5) {
+            ws.send("{\"v\":\"m" + i + "\"}");
+            WsMessage m #= ws.receive();
+            String t #= m.text();
+            right = right && t.equals("{\"v\":\"m" + i + "\"}");
+            i = i + 1;
+        }
+        if (!right || WsSelfTest.probeSame != 4 || ConnectionProbe.built() != 1) {
+            System.stdout.println("  echo through a Connection component: right " + right
+                + " same " + WsSelfTest.probeSame + " built " + ConnectionProbe.built());
+            failures = failures + 1;
+        }
+        // 4.1.5: the registry addresses the connection by id.
+        int64 id = WsSelfTest.lastId;
+        if (web.connections().count() != 1 || !web.connections().send(id, "{\"by\":\"id\"}")) {
+            System.stdout.println("  the registry did not address connection " + id);
+            failures = failures + 1;
+        } else {
+            WsMessage byId #= ws.receive();
+            String bt #= byId.text();
+            if (!bt.equals("{\"by\":\"id\"}")) {
+                System.stdout.println("  a send by id delivered " + bt);
+                failures = failures + 1;
+            }
+        }
+        ws.close(1000, "done");
+        int32 w = 0;
+        while ((ConnectionProbe.dropped() == 0 || web.connections().count() != 0) && w < 200) {
+            Fiber.sleep(Duration.ofMillis(10));
+            w = w + 1;
+        }
+        if (ConnectionProbe.dropped() != 1 || web.connections().count() != 0) {
+            System.stdout.println("  close: probe dropped " + ConnectionProbe.dropped()
+                + ", registry holds " + web.connections().count());
+            failures = failures + 1;
+        }
+        if (web.pipeline().count() != stages) {
+            System.stdout.println("  the HTTP pipeline changed across an upgrade");
+            failures = failures + 1;
+        }
+
+        // 4.1.0: the close-code catalogue.
+        int32 bad = WsSelfTest.closeCodeFor(base + "/fail", "[1,2]");
+        int32 custom = WsSelfTest.closeCodeFor(base + "/fail", "{\"kind\":\"custom\"}");
+        int32 fault = WsSelfTest.closeCodeFor(base + "/fail", "{\"kind\":\"other\"}");
+        if (bad != 1007 || custom != 4001 || fault != 1011) {
+            System.stdout.println("  close codes: malformed " + bad + " custom " + custom + " fault " + fault);
+            failures = failures + 1;
+        }
+
+        // 4.1.1 and 4.1.2: a subscriber receives broadcasts, decoded as JSON,
+        // and N messages each way take no fresh buffer.
+        WebSocket sub #= WebSocket.connect(base + "/events");
+        sub.send("{\"v\":\"warm\"}");
+        WsMessage warm #= sub.receive();
+        int32 pooled = web.bufferAllocations();
+        int32 got = 0;
+        i = 0;
+        while (i < 50) {
+            web.connections().broadcast("{\"user\":\"u" + i + "\"}");
+            WsMessage m #= sub.receive();
+            JsonBody jb = heap JsonBody();
+            jb.bind(m.bytes(), 0, m.length());
+            String u #= jb.stringCopy("user");
+            if (u.equals("u" + i)) {
+                got = got + 1;
+            }
+            sub.send("{\"v\":\"r" + i + "\"}");
+            WsMessage r #= sub.receive();
+            i = i + 1;
+        }
+        if (got != 50 || web.bufferAllocations() != pooled) {
+            System.stdout.println("  broadcast: decoded " + got + " of 50, fresh buffers "
+                + (web.bufferAllocations() - pooled));
+            failures = failures + 1;
+        }
+        sub.close(1000, "done");
+        String hello #= WsSelfTest.httpGet(port, "/hello");
+        if (!hello.endsWith("hello")) {
+            System.stdout.println("  HTTP after the upgrades answered " + hello);
+            failures = failures + 1;
+        }
+        return failures;
+    }
+
+    static #String httpGet(int32 port, String path) {
+        TcpStream sock #= TcpStream.connectAsync(SocketAddress.parse("127.0.0.1:" + port));
+        String req = "GET " + path + " HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n";
+        int8[] rb #= req.toBytes();
+        sock.writeAllAsync(rb, (int64) 0, (int64) req.byteLength());
+        int8[] buf = heap int8[4096];
+        int32 n = 0;
+        int64 got = sock.readAsync(buf, (int64) 0, (int64) 4096);
+        while (got > (int64) 0) {
+            n = n + (int32) got;
+            got = sock.readAsync(buf, (int64) n, (int64) (4096 - n));
+        }
+        sock.close();
+        return Bytes.toString(buf[0:n]);
+    }
+
+    // 4.1.4: a subscriber that never reads overflows the bounded queue.
+    static async int32 slowReader(int32 port, WebServer web) {
+        TcpStream peer #= TcpStream.connectAsync(SocketAddress.parse("127.0.0.1:" + port));
+        String hs = "GET /events HTTP/1.1\r\nHost: t\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+            + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+        int8[] hb #= hs.toBytes();
+        peer.writeAllAsync(hb, (int64) 0, (int64) hs.byteLength());
+        int32 w = 0;
+        while (web.connections().count() == 0 && w < 200) {
+            Fiber.sleep(Duration.ofMillis(10));
+            w = w + 1;
+        }
+        String big = "{\"pad\":\"";
+        int32 k = 0;
+        while (k < 6000) {
+            big = big + "xxxxxxxxxx";
+            k = k + 1;
+        }
+        big = big + "\"}";
+        int32 sent = 0;
+        while (web.connections().count() > 0 && sent < 2000) {
+            web.connections().broadcast(big);
+            sent = sent + 1;
+        }
+        int32 failures = 0;
+        if (web.connections().count() != 0) {
+            System.stdout.println("  a reader that never reads was not closed after " + sent + " sends");
+            failures = failures + 1;
+        }
+        if (web.connections().lastCloseCode() != 1008) {
+            System.stdout.println("  the overflow closed with " + web.connections().lastCloseCode());
+            failures = failures + 1;
+        }
+        if (web.connections().peakQueued() > 4) {
+            System.stdout.println("  the queue held " + web.connections().peakQueued() + ", over its bound of 4");
+            failures = failures + 1;
+        }
+        peer.close();
+        return failures;
+    }
+
+    static void add(TestRunner t) {
+        t.test("WebSocket: pipelines, close codes, Connection scope, registry, broadcast", () -> {
+            scope {
+                WebServer web #= WsSelfTest.server(64);
+                int32 port = web.port();
+                Task<int32> sv = spawn serve(web);
+                Task<int32> td = spawn drive(port, web);
+                int32 failures = await td;
+                web.shutdown(Duration.ofSeconds(2));
+                await sv;
+                SelfTest.req(failures == 0, "every WebSocket check held (see the lines above)");
+            }
+        });
+        t.test("WebSocket: a reader that never reads is closed at the queue bound", () -> {
+            scope {
+                WebServer web #= WsSelfTest.server(4);
+                int32 port = web.port();
+                Task<int32> sv = spawn serve(web);
+                Task<int32> td = spawn slowReader(port, web);
+                int32 failures = await td;
+                web.shutdown(Duration.ofSeconds(2));
+                await sv;
+                SelfTest.req(failures == 0, "the slow reader was closed (see the lines above)");
+            }
+        });
+    }
+}

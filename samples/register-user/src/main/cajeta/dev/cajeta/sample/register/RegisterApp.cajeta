@@ -14,6 +14,7 @@ import dev.cajeta.primavera.web.JsonBody;
 import dev.cajeta.primavera.web.RequestView;
 import dev.cajeta.primavera.web.Response;
 import dev.cajeta.primavera.web.WebServer;
+import dev.cajeta.primavera.web.WebServerBuilder;
 
 /**
  * The registration sample (primavera-web spec §5): register, look up and
@@ -25,12 +26,17 @@ public final class RegisterApp {
 
     MemoryUserPool pool;
     MemoryUserDirectory directory;
+    Events feed;
 
     public RegisterApp() {
         this.pool = heap MemoryUserPool();
         this.directory = heap MemoryUserDirectory();
+        this.feed = heap Events();
         return;
     }
+
+    /** The `/events` feed a registration is announced on. */
+    public Events events() { return this.feed; }
 
     public MemoryUserPool users() { return this.pool; }
 
@@ -39,9 +45,9 @@ public final class RegisterApp {
     /** The provider name the memory driver's subjects are linked under. */
     public static String PROVIDER() { return "memory"; }
 
-    /** Registers the sample's endpoints over `pool` and `dir` on `api`. */
-    public static void routes(Endpoints api, UserPool pool, UserDirectory dir) {
-        api.json("POST", "/users", (RequestView q, JsonBody b, Response r) -> RegisterApp.register(pool, dir, b, r));
+    /** Registers the sample's endpoints over `pool` and `dir` on `api`; registrations go to `events`. */
+    public static void routes(Endpoints api, UserPool pool, UserDirectory dir, Events events) {
+        api.json("POST", "/users", (RequestView q, JsonBody b, Response r) -> RegisterApp.register(pool, dir, events, b, r));
         api.route("GET", "/users/{id}", (RequestView q, Response r) -> RegisterApp.lookup(pool, dir, q, r));
         api.json("POST", "/users/{id}/confirm",
             (RequestView q, JsonBody b, Response r) -> RegisterApp.confirm(pool, dir, q, b, r));
@@ -60,7 +66,7 @@ public final class RegisterApp {
     }
 
     /** `POST /users`: 201 with the new id, 400 naming a bad field, 409 for a taken username. */
-    public static void register(UserPool pool, UserDirectory dir, JsonBody b, Response r) {
+    public static void register(UserPool pool, UserDirectory dir, Events events, JsonBody b, Response r) {
         if (!b.isString("username")) {
             r.error(400, "username is required");
             return;
@@ -88,6 +94,7 @@ public final class RegisterApp {
         UserRecord rec #= dir.create(username, RegisterApp.PROVIDER(), subject);
         r.json(201).field("id", rec.id()).field("username", rec.username())
             .fieldBool("confirmed", reg.confirmed()).end();
+        events.registered(username);
         return;
     }
 
@@ -135,9 +142,14 @@ public final class RegisterApp {
     public static int32 main(String[] args) {
         RegisterApp app = heap RegisterApp();
         Endpoints api = heap Endpoints();
-        RegisterApp.routes(api, app.users(), app.records());
+        RegisterApp.routes(api, app.users(), app.records(), app.events());
         String addr = args.count() > 0 ? args[0] : "127.0.0.1:8080";
-        WebServer web #= WebServer.bind(addr, #api);
+        WebServerBuilder b #= WebServer.builder();
+        b.bind(addr);
+        b.endpoints(#api);
+        b.websockets(Events.sockets());
+        WebServer web #= b.build();
+        app.events().attach(web.connections());
         System.stdout.println("register-user listening on " + addr);
         web.serve();
         return 0;

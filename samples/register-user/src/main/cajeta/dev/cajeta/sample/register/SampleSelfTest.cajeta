@@ -6,8 +6,13 @@ import dev.cajeta.cloud.identity.MemoryUserPool;
 import dev.cajeta.http.ClientRequest;
 import dev.cajeta.http.ClientResponse;
 import dev.cajeta.http.client.HttpClient;
+import cajeta.concurrent.Fiber;
+import dev.cajeta.http.ws.WebSocket;
+import dev.cajeta.http.ws.WsMessage;
 import dev.cajeta.primavera.web.Endpoints;
+import dev.cajeta.primavera.web.JsonBody;
 import dev.cajeta.primavera.web.WebServer;
+import dev.cajeta.primavera.web.WebServerBuilder;
 
 /**
  * The sample's self-test (primavera-web plan 2.1.1, 2.1.2, 2.1.4): the
@@ -108,6 +113,44 @@ public final class SampleSelfTest {
         String confirmed #= resp.bodyString();
         SampleSelfTest.check(confirmed.indexOf("\"confirmed\":true") >= 0, "the lookup reports the confirmation");
 
+        // The WebSocket phase (spec §6.7): a subscriber on /events hears every
+        // registration, decoded as JSON over its message, with the pool flat.
+        WebSocket sub #= WebSocket.connect("ws://127.0.0.1:" + port + "/events");
+        int32 waited = 0;
+        while (web.connections().count() == 0 && waited < 200) {
+            Fiber.sleep(Duration.ofMillis(10));
+            waited = waited + 1;
+        }
+        SampleSelfTest.post(client, resp, base + "/users", "{\"username\":\"eve\",\"password\":\"correct horse\"}");
+        WsMessage first #= sub.receive();
+        JsonBody ev = heap JsonBody();
+        ev.bind(first.bytes(), 0, first.length());
+        String who #= ev.stringCopy("registered");
+        SampleSelfTest.check(who != null && who.equals("eve"), "a subscriber hears the registration as JSON");
+        int32 wsPool = web.bufferAllocations();
+        int32 heard = 0;
+        int32 n = 0;
+        while (n < 50) {
+            SampleSelfTest.post(client, resp, base + "/users", "{\"username\":\"sub" + n + "\",\"password\":\"correct horse\"}");
+            WsMessage m #= sub.receive();
+            ev.bind(m.bytes(), 0, m.length());
+            String got #= ev.stringCopy("registered");
+            if (got != null && got.equals("sub" + n)) {
+                heard = heard + 1;
+            }
+            n = n + 1;
+        }
+        SampleSelfTest.check(heard == 50, "50 registrations reach the subscriber in order (" + heard + ")");
+        SampleSelfTest.check(web.bufferAllocations() == wsPool,
+            "50 WebSocket messages make no fresh buffer (" + (web.bufferAllocations() - wsPool) + ")");
+        sub.close(1000, "done");
+        waited = 0;
+        while (web.connections().count() != 0 && waited < 200) {
+            Fiber.sleep(Duration.ofMillis(10));
+            waited = waited + 1;
+        }
+        SampleSelfTest.check(web.connections().count() == 0, "a closed subscriber leaves the registry");
+
         int32 i = 0;
         while (i < 8) {
             SampleSelfTest.post(client, resp, base + "/users", "{\"username\":\"warm" + i + "\",\"password\":\"correct horse\"}");
@@ -132,9 +175,18 @@ public final class SampleSelfTest {
         int32 before = web.bufferAllocations();
         i = 0;
         while (i < 20) {
-            HttpClient fresh = heap HttpClient();
-            ClientResponse r2 = heap ClientResponse();
-            SampleSelfTest.get(fresh, r2, base + "/users/" + id);
+            {
+                HttpClient fresh = heap HttpClient();
+                ClientResponse r2 = heap ClientResponse();
+                SampleSelfTest.get(fresh, r2, base + "/users/" + id);
+            }
+            // The client has closed; wait for the server to take its two
+            // buffers back before dialing again, instead of racing it.
+            int32 settle = 0;
+            while (web.idleBuffers() < 2 && settle < 200) {
+                Fiber.sleep(Duration.ofMillis(5));
+                settle = settle + 1;
+            }
             i = i + 1;
         }
         SampleSelfTest.check(web.bufferAllocations() - before <= 2,
@@ -151,9 +203,14 @@ public final class SampleSelfTest {
         RegisterApp app = heap RegisterApp();
         MemoryUserPool pool = app.users();
         Endpoints api = heap Endpoints();
-        RegisterApp.routes(api, pool, app.records());
+        RegisterApp.routes(api, pool, app.records(), app.events());
         scope {
-            WebServer web #= WebServer.bind("127.0.0.1:0", #api);
+            WebServerBuilder b #= WebServer.builder();
+            b.bind("127.0.0.1:0");
+            b.endpoints(#api);
+            b.websockets(Events.sockets());
+            WebServer web #= b.build();
+            app.events().attach(web.connections());
             int32 port = web.port();
             Task<int32> sv = spawn serve(web);
             Task<int32> tc = spawn contract(port, pool, web);

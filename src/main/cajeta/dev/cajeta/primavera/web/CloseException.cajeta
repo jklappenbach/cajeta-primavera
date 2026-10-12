@@ -1,0 +1,17 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.lang.String;
+
+/**
+ * Thrown by a WebSocket handler to close its connection with `code`
+ * (primavera-web spec §7.12). The peer gets the code and no reason text.
+ */
+public class CloseException extends Exception {
+    public int32 code;
+
+    public CloseException(int32 code) {
+        String m = "WebSocket closed by its handler";
+        super(m.substring(0, m.byteLength()));
+        this.code = code;
+    }
+}

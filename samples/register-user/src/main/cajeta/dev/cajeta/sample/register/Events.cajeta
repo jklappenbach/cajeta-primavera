@@ -1,0 +1,46 @@
+package dev.cajeta.sample.register;
+
+import cajeta.lang.String;
+import dev.cajeta.primavera.web.Connection;
+import dev.cajeta.primavera.web.ConnectionRegistry;
+import dev.cajeta.primavera.web.JsonBody;
+import dev.cajeta.primavera.web.WebSocketEndpoints;
+
+/**
+ * The sample's `/events` feed (primavera-web spec §6.7): every subscriber
+ * gets `{"registered":"<username>"}` when a user registers. The server's
+ * registry is attached once the server is built.
+ */
+public final class Events {
+    ConnectionRegistry registry;
+
+    public Events() {
+        this.registry = null;
+        return;
+    }
+
+    /** Sends on `registry`, the built server's connections. */
+    public void attach(^ConnectionRegistry registry) {
+        this.registry = registry;
+        return;
+    }
+
+    /** Tells every subscriber that `username` registered. */
+    public void registered(String username) {
+        if (this.registry != null) {
+            this.registry.broadcast("{\"registered\":\"" + username + "\"}");
+        }
+        return;
+    }
+
+    /** The WebSocket paths: `/events`, which only listens. */
+    public static #WebSocketEndpoints sockets() {
+        WebSocketEndpoints ws = heap WebSocketEndpoints();
+        ws.json("/events", (Connection c, JsonBody b) -> Events.ignore(c, b));
+        return #ws;
+    }
+
+    static void ignore(Connection c, JsonBody b) {
+        return;
+    }
+}

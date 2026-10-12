@@ -1,5 +1,6 @@
 package dev.cajeta.primavera.web;
 
+import cajeta.concurrent.Channel;
 import cajeta.io.net.SocketAddress;
 import cajeta.lang.String;
 import cajeta.time.Duration;
@@ -23,12 +24,17 @@ public final class WebServer {
     Pipeline pipeline;
     BufferSource source;
     Endpoints endpoints;
+    // The WebSocket paths: the routes and every connection borrow them.
+    WebSocketEndpoints sockets;
+    ConnectionRegistry registry;
 
     WebServer() {
         this.server = null;
         this.pipeline = null;
         this.source = null;
         this.endpoints = null;
+        this.sockets = null;
+        this.registry = heap ConnectionRegistry();
         return;
     }
 
@@ -62,16 +68,52 @@ public final class WebServer {
         return;
     }
 
-    /** Serves until {@link #shutdown}. */
+    /**
+     * Serves until {@link #shutdown}. Each WebSocket connection's writer
+     * fiber runs inside this call, so it returns once they have all ended.
+     */
     public void serve() {
-        this.server.serve();
+        ConnectionRegistry r = this.registry;
+        scope {
+            spawn writers(r);
+            this.server.serve();
+        }
         return;
     }
 
-    /** Stops accepting and waits up to `deadline` for requests in flight. */
+    // Spawns a writer fiber for each connection the registry opens, until
+    // the registry shuts down; returns when they have all ended.
+    static async int32 writers(ConnectionRegistry registry) {
+        scope {
+            boolean going = true;
+            while (going) {
+                Optional<Connection> o = registry.opened.receive();
+                if (o.isPresent()) {
+                    spawn writer(o.get());
+                } else {
+                    going = false;
+                }
+            }
+        }
+        return 1;
+    }
+
+    static async int32 writer(Connection c) {
+        c.writeLoop();
+        return 1;
+    }
+
+    /**
+     * Stops accepting, closes every WebSocket connection with 1001, and waits
+     * up to `deadline` for requests in flight.
+     */
     public boolean shutdown(Duration deadline) {
+        this.registry.shutdown();
         return this.server.shutdown(deadline);
     }
+
+    /** The open WebSocket connections. */
+    public ConnectionRegistry connections() { return this.registry; }
 
     /** The bound address, with the port the system chose for port 0. */
     public #SocketAddress localAddress() {
@@ -86,6 +128,15 @@ public final class WebServer {
     /** Fresh connection buffers the transport's pool has made. */
     public int32 bufferAllocations() {
         return this.server.bufferAllocations();
+    }
+
+    /**
+     * Connection buffers returned and waiting for reuse. A closed connection
+     * gives back both of its buffers, so a caller can wait for that rather
+     * than race the transport's teardown.
+     */
+    public int32 idleBuffers() {
+        return this.server.idleBuffers();
     }
 
     /** The pipeline's own buffer source, for stages that take a buffer. */

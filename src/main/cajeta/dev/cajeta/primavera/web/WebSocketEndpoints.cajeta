@@ -1,0 +1,74 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.collection.ArrayList;
+import cajeta.lang.String;
+import dev.cajeta.http.ws.WsUpgrade;
+
+/**
+ * A server's WebSocket paths (primavera-web spec §6). Each path is a GET
+ * route on the HTTP pipeline that upgrades; after the 101 the connection runs
+ * as a {@link Connection}, whose messages are indexed as JSON over the
+ * connection's buffer and handed to the path's handler. The HTTP pipeline is
+ * left as it was built (spec §7.17).
+ *
+ * Every connection has a send queue of `queueBound` messages. A peer that
+ * falls further behind is closed with `overflowCode` (spec §6.5, §10.5).
+ */
+public final class WebSocketEndpoints {
+    ArrayList<WebSocketEndpoint> list;
+    int32 bound;
+    int32 overflow;
+
+    public WebSocketEndpoints() {
+        this.list = heap ArrayList<WebSocketEndpoint>();
+        this.bound = 64;
+        this.overflow = 1008;
+        return;
+    }
+
+    /** Messages a connection may have queued before it is closed (64 unless set). */
+    public WebSocketEndpoints queueBound(int32 n) {
+        this.bound = n;
+        return this;
+    }
+
+    /** The close code for a connection whose queue overflows (1008, policy violation, unless set). */
+    public WebSocketEndpoints overflowCode(int32 code) {
+        this.overflow = code;
+        return this;
+    }
+
+    /** Accepts WebSocket connections on `path`; each message is JSON, indexed in place. */
+    public WebSocketEndpoints json(String path, (Connection, JsonBody) -> void handler) {
+        WebSocketEndpoint e = heap WebSocketEndpoint(path, handler);
+        this.list.add(#e);
+        return this;
+    }
+
+    public int32 count() { return this.list.count(); }
+
+    // Adds an upgrading GET route to `api` for every path.
+    void install(Endpoints api, ConnectionRegistry registry) {
+        int32 i = 0;
+        while (i < this.list.count()) {
+            this.installOne(api, this.list.get(i), registry);
+            i = i + 1;
+        }
+        return;
+    }
+
+    void installOne(Endpoints api, WebSocketEndpoint e, ConnectionRegistry registry) {
+        int32 bound = this.bound;
+        int32 overflow = this.overflow;
+        api.route("GET", e.path(), (RequestView q, Response r) ->
+            WebSocketEndpoints.upgrade(q, r, e, registry, bound, overflow));
+        return;
+    }
+
+    static void upgrade(RequestView q, Response r, WebSocketEndpoint e, ConnectionRegistry registry,
+                        int32 bound, int32 overflow) {
+        Connection c = heap Connection(registry.nextId(), registry, e, bound, overflow);
+        WsUpgrade.accept(q.request(), r.raw(), #c, false);
+        return;
+    }
+}

@@ -83,10 +83,43 @@ object, `field` and `fieldBool` add members with strings escaped, and `end`
 closes it. `error(status, message)` writes `{"error": message}`, and
 `empty(status)` sends no body.
 
+## WebSocket
+
+A WebSocket path is a GET route on the HTTP pipeline that upgrades. After the
+101 the connection runs as a `Connection`, and the HTTP pipeline is unchanged.
+
+```cajeta
+WebSocketEndpoints ws = heap WebSocketEndpoints();
+ws.json("/events", (Connection c, JsonBody b) -> Feed.onMessage(c, b));
+
+WebServerBuilder b #= WebServer.builder();
+b.endpoints(#api);
+b.websockets(#ws);
+WebServer web #= b.build();
+web.connections().broadcast("{\"registered\":\"ada\"}");
+```
+
+- Each message is a JSON index over the connection's buffer, valid during
+  the handler, under the same copy-out rule as a request body. A warm
+  connection reads and writes a message with no allocation.
+- `Connection` is the `Connection` scope: a `@Component(scope = "Connection")`
+  lives from open to close. Each message runs in a `Message` scope inside it.
+- `web.connections()` addresses open connections by id (`send(id, text)`) or
+  all at once (`broadcast`). A connection leaves it when it closes.
+- Sends are queued and written by the connection's own writer fiber, which
+  runs inside `WebServer.serve`. The queue holds `queueBound` messages (64 by
+  default). A peer that falls further behind is closed with `overflowCode`
+  (1008 by default), so a slow reader stalls nobody else and memory does not
+  grow.
+- A handler that throws closes its connection: 1007 for a body that is not a
+  JSON object, 1009 for an oversized message, the code of a `CloseException`,
+  and 1011 for anything else. The peer gets the code and no detail.
+
 ## The sample
 
 `samples/register-user` registers, looks up and confirms users against the
 identity port's memory driver. The application mints its own user id, and
 the `UserDirectory` in `dev.cajeta.primavera.identity` keeps the provider's
-subject as a link. `cajeta test` at the repo root runs it after the library's
-own tests.
+subject as a link. Its `/events` WebSocket path announces each registration
+to every subscriber. `cajeta test` at the repo root runs it after the
+library's own tests.
