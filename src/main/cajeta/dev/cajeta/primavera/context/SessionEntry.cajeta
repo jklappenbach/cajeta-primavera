@@ -1,20 +1,28 @@
 package dev.cajeta.primavera.context;
 
+import cajeta.aot.Scope;
+
 /**
- * One live session inside a {@Link SessionStore}: the owned bag of
- * session-scoped beans plus the expiry bookkeeping the store's TTL policy
- * reads. The entry OWNS its ScopeMap, so dropping the entry (invalidate,
- * expiry eviction, store teardown) drops the bag and every bean in it.
+ * One live session inside a {@Link SessionStore}, and the anchor of the
+ * `Session` scope (component-scopes spec §10.2). A
+ * `@Component(scope = "Session")` built while {@link #within} runs belongs to
+ * this entry: later requests of the same session get the same instance, and
+ * it is freed when the store drops the entry (invalidate, expiry eviction,
+ * displacement by a new session under the same id, store teardown).
  */
+@Scope("Session")
 public class SessionEntry {
-    public ScopeMap map;
     public int64 createdAt;
     public int64 lastAccessed;
 
     public SessionEntry(int64 now) {
-        ScopeMap created = heap ScopeMap();
-        this.map = #created;
         this.createdAt = now;
         this.lastAccessed = now;
+    }
+
+    /** Runs `body` with this session current. */
+    public void within(() -> void body) {
+        body();
+        return;
     }
 }

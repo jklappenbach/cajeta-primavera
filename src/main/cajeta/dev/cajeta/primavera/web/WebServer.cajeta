@@ -6,7 +6,7 @@ import cajeta.time.Duration;
 import dev.cajeta.http.HttpRequest;
 import dev.cajeta.http.HttpResponse;
 import dev.cajeta.http.server.HttpServer;
-import dev.cajeta.primavera.context.RequestScope;
+import dev.cajeta.primavera.context.Requests;
 import dev.cajeta.primavera.pipeline.Buffer;
 import dev.cajeta.primavera.pipeline.BufferSource;
 import dev.cajeta.primavera.pipeline.Pipeline;
@@ -14,7 +14,7 @@ import dev.cajeta.primavera.pipeline.RequestContext;
 
 /**
  * Endpoints served over `cajeta-http` (primavera-web spec §5, §7.8). Each
- * request runs the pipeline under a fresh request scope, over the body the
+ * request runs the pipeline as one `Request` scope ({@link Requests}), over the body the
  * transport framed into its pooled input buffer and lent for the request.
  */
 public final class WebServer {
@@ -46,7 +46,7 @@ public final class WebServer {
     }
 
     static void dispatch(Pipeline p, BufferSource s, HttpRequest q, HttpResponse r) {
-        RequestScope.enter(() -> WebServer.run(p, s, q, r));
+        Requests.run(() -> WebServer.run(p, s, q, r));
         return;
     }
 

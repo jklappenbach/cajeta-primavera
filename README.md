@@ -20,46 +20,44 @@ patterns.
 
 | Capability | State |
 |---|---|
-| **Request scope** over `FiberLocal` (`RequestScope`, `ScopeMap`) | ✅ built, self-tested |
+| **`Request` and `Session` scopes**, published for `@Component(scope = ...)` (`Requests`, `SessionEntry`) | ✅ built, self-tested |
 | DI substrate (`@Component` / `@Inject` / `@Factory` / aspects) | ↳ **core stdlib** — primavera consumes it (`docs/specification/lang/AspectModel.md`); not owned here |
-| Session scope (`SessionScope` + a session store) | ✅ built, self-tested |
+| Session store with idle and absolute TTLs (`SessionScope`, `SessionStore`) | ✅ built, self-tested |
 | Web request/session model (policy over [cajeta-http](https://github.com/jklappenbach/cajeta-http)) | ▢ in progress, `primavera-web` spec and plan in the cajeta repo |
 | Stereotypes (`@Repository` / `@Service`) + deployment `@Profile` | ▢ planned (policy over the core substrate) |
-| primavera-side unit-test helpers (`PrimaveraTest`, both executors) | ✅ built, self-tested (on [cajeta-unit](https://github.com/jklappenbach/cajeta-unit)) |
+| primavera-side unit-test helpers (`PrimaveraTest`) | ✅ built, self-tested (on [cajeta-unit](https://github.com/jklappenbach/cajeta-unit)) |
 
 See [`plan/README.md`](plan/README.md) for where the roadmap lives.
 
-## Request scope
+## Request and session scopes
 
-The load-bearing idea: request-scoped state is keyed on the **logical request**,
-not on a thread or fiber. Because it rides a `FiberLocal` binding, one mechanism
-serves both webserver concurrency models:
-
-- **thread / fiber-per-request** — the request owns one fiber start to finish,
-  so the scope *is* that fiber's binding. Cajeta's cheap fibers make this scale
-  where OS-thread-per-request can't.
-- **threadpool over completion ports** (epoll / io_uring / IOCP) — the request
-  isn't pinned to a thread; its continuation hops pool threads as I/O completes.
-  A thread-local bag would be a correctness bug here. The scope travels *with*
-  the request — structured fan-out inherits the binding, an unstructured handoff
-  carries it via a `FiberContext` snapshot — so it follows the request across
-  thread hops and never leaks across requests.
+primavera publishes two scopes for the language's component model. A component
+names one, and the compiler builds one instance per scope and frees it at the
+scope's end:
 
 ```cajeta
-import dev.cajeta.primavera.context.RequestScope;
+import cajeta.aot.Component;
+import dev.cajeta.primavera.context.Requests;
 
-RequestScope.enter(() -> {
-    // current() is live for the whole call tree — no parameter threading.
-    if (RequestScope.has("com.app.Cart") == false) {
-        RequestScope.store("com.app.Cart", #(heap Cart()));
-    }
-    Cart cart = (Cart) RequestScope.lookup("com.app.Cart");
-    handle(request, cart);
-});   // the bag — and every bean it owns — drops here
+@Component(scope = "Request")
+public class Cart {
+    public Cart() { return; }
+}
+
+Requests.run(() -> {
+    Cart a = Cart.__cajeta_inject();
+    Cart b = Cart.__cajeta_inject();   // the same Cart: one per request
+});                                    // the Cart is freed here, on return or throw
 ```
 
-The bag (`ScopeMap`) **owns** its beans: when the request ends, the whole graph
-of request-scoped instances drops with it.
+`WebServer` runs every request through `Requests.run`. A `Session` component
+lives in the session the request is attached to (`SessionScope.attach`), so a
+later request of the same session gets the same instance, and it is freed when
+the session is invalidated or expires.
+
+A task spawned inside a `scope { }` block shares the request. A detached task,
+or one handed a `FiberContext`, sees no request and takes what it needs as owned
+arguments.
 
 ## Build & test
 
@@ -74,7 +72,7 @@ cajeta test     # build + run the runtime self-tests (fails the build on any fai
 ## Documentation
 
 - [`docs/specification/primavera-spec.md`](docs/specification/primavera-spec.md) — **the canonical framework specification** (scopes, config, web/endpoints, resilience, security, data, observability, …).
-- [`docs/RequestScope.md`](docs/RequestScope.md) — request scope: model, ownership, concurrency.
+- [`docs/RequestScope.md`](docs/RequestScope.md) — the `Request` scope: anchor, lifetime, fibers.
 - [`docs/Pipeline.md`](docs/Pipeline.md) — the processing pipeline: stages, kinds checked at build, buffers in and out, throw on error.
 - [`docs/Configuration.md`](docs/Configuration.md) — config & value injection (`@Value`/`@Config`): sources, AoT binders, frozen-mode, secrets, ML experiment config.
 - [`docs/Data.md`](docs/Data.md) — multi-store data access (SQL/DynamoDB/Redis): the neutral annotation union, generated repositories, per-store dialects.

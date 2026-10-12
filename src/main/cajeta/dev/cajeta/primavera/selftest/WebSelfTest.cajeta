@@ -9,12 +9,10 @@ import dev.cajeta.http.ClientResponse;
 import dev.cajeta.http.client.HttpClient;
 import dev.cajeta.http.status.BadRequestException;
 import dev.cajeta.http.status.ConflictException;
-import dev.cajeta.primavera.context.RequestScope;
 import dev.cajeta.primavera.pipeline.Buffer;
 import dev.cajeta.primavera.pipeline.Kind;
 import dev.cajeta.primavera.pipeline.RequestContext;
 import dev.cajeta.primavera.pipeline.Stage;
-import dev.cajeta.primavera.test.TrackedBean;
 import dev.cajeta.primavera.web.Endpoints;
 import dev.cajeta.primavera.web.JsonBody;
 import dev.cajeta.primavera.web.RequestView;
@@ -35,7 +33,6 @@ public final class WebSelfTest {
     static int32 keptOff;
     static int32 keptLen;
     static String copied;
-    static int32 made;
 
     static int32 put(int8[] b, int32 at, String s) {
         int32 i = 0;
@@ -110,20 +107,16 @@ public final class WebSelfTest {
         return;
     }
 
-    static #Object track() {
-        WebSelfTest.made = WebSelfTest.made + 1;
-        TrackedBean bean = heap TrackedBean(WebSelfTest.made);
-        return #bean;
-    }
-
     static void scoped(RequestView q, Response r) {
-        String key = "dev.cajeta.primavera.test.TrackedBean";
-        RequestScope.materialize(key, () -> WebSelfTest.track());
-        RequestScope.materialize(key, () -> WebSelfTest.track());
-        TrackedBean first = (TrackedBean) RequestScope.lookup(key);
-        TrackedBean again = (TrackedBean) RequestScope.lookup(key);
+        RequestProbe first = RequestProbe.__cajeta_inject();
+        RequestProbe again = RequestProbe.__cajeta_inject();
         r.json(200).field("same", (int64) (first.tag == again.tag ? 1 : 0)).end();
         return;
+    }
+
+    static void scopedConflict(RequestView q, Response r) {
+        RequestProbe p = RequestProbe.__cajeta_inject();
+        throw heap ConflictException("a 4xx after building a Request component");
     }
 
     static void conflict(RequestView q, Response r) {
@@ -139,6 +132,7 @@ public final class WebSelfTest {
         api.window("POST", "/view", (RequestView q, Slice<int8> b, Response r) -> WebSelfTest.byView(q, b, r));
         api.owned<Signup>("POST", "/owned", (RequestView q, Signup s, Response r) -> WebSelfTest.byOwned(q, s, r));
         api.route("GET", "/scoped", (RequestView q, Response r) -> WebSelfTest.scoped(q, r));
+        api.route("GET", "/scoped-conflict", (RequestView q, Response r) -> WebSelfTest.scopedConflict(q, r));
         api.route("GET", "/conflict", (RequestView q, Response r) -> WebSelfTest.conflict(q, r));
         return #api;
     }
@@ -195,13 +189,18 @@ public final class WebSelfTest {
         }
 
         ClientRequest sreq = heap ClientRequest(base + "/scoped");
-        TrackedBean.resetDrops();
-        WebSelfTest.made = 0;
+        RequestProbe.reset();
         client.send(sreq, resp);
         String once #= resp.bodyString();
         client.send(sreq, resp);
-        if (WebSelfTest.made != 2 || TrackedBean.drops != 2 || !once.equals("{\"same\":1}")) {
-            System.stdout.println("  request scope: made " + WebSelfTest.made + " dropped " + TrackedBean.drops + " body " + once);
+        if (RequestProbe.built() != 2 || RequestProbe.dropped() != 2 || !once.equals("{\"same\":1}")) {
+            System.stdout.println("  request scope: built " + RequestProbe.built() + " dropped " + RequestProbe.dropped() + " body " + once);
+            failures = failures + 1;
+        }
+        ClientRequest fourxx = heap ClientRequest(base + "/scoped-conflict");
+        client.send(fourxx, resp);
+        if (resp.status() != 409 || RequestProbe.built() != 3 || RequestProbe.dropped() != 3) {
+            System.stdout.println("  a 409 request: status " + resp.status() + " built " + RequestProbe.built() + " dropped " + RequestProbe.dropped());
             failures = failures + 1;
         }
 

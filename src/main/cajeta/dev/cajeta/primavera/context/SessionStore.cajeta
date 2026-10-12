@@ -10,8 +10,8 @@ import dev.cajeta.logging.Logged;
 import dev.cajeta.logging.LogRecord;
 
 /**
- * Owning, id-keyed store of session bags — the server-side half of session
- * scope (plan/primavera-plan.md Phase 2). A session outlives any single
+ * Owning, id-keyed store of sessions, the server-side half of the `Session`
+ * scope. A session outlives any single
  * request and is shared across a client's requests, so the store is
  * process-wide state, NOT a FiberLocal binding; {@Link SessionScope} binds
  * only the session *id* to the request extent and resolves through here.
@@ -19,8 +19,8 @@ import dev.cajeta.logging.LogRecord;
  * ## Ownership
  * The backing `HashMap<String, SessionEntry>` owns its entries (toolchain
  * >= 0.9.2 element ownership): `invalidate`/expiry `remove` and `create`
- * displacement all DROP the evicted entry — its ScopeMap and every bean in
- * it are freed, destructors run. Nothing leaks on eviction.
+ * displacement all DROP the evicted entry, and with it every `Session`
+ * component it anchors; destructors run. Nothing leaks on eviction.
  *
  * ## Expiry
  * Two independent TTLs, each disabled at 0 (the default):
@@ -36,7 +36,7 @@ import dev.cajeta.logging.LogRecord;
  * ## Concurrency
  * The store is shared across all in-flight requests; every public method
  * takes the internal `Lock` for the map operation (fibers park, carriers
- * don't block). The `ScopeMap` a resolve hands back is a borrow of store
+ * don't block). The `SessionEntry` a resolve hands back is a borrow of store
  * state: it stays valid until that session is invalidated or expires.
  * v1 posture: invalidating a session that another in-flight request is
  * actively using is a caller-coordination bug — the web tier (Phase 4)
@@ -53,7 +53,7 @@ import dev.cajeta.logging.LogRecord;
 public class SessionStore {
     // Process-wide default clock, owned by the class and BORROWED by every
     // store (lifetime = process, so the borrow never dangles). Lazily built —
-    // same pattern as RequestScope.SCOPE — because object-typed static
+    // because object-typed static
     // initializers aren't reliably run before first use.
     // Concrete type (not the TimeSource interface) so the lazy null-check is a
     // class-reference compare — an interface-typed `== null` mislowers.
@@ -137,11 +137,11 @@ public class SessionStore {
     }
 
     /**
-     * The session's bag, or null when no live session exists for `id`.
-     * Refreshes the idle clock; an expired session is evicted here and
-     * reads as absent.
+     * The live session under `id`, or null when there is none. Refreshes the
+     * idle clock; an expired session is evicted here and reads as absent.
+     * The entry is a borrow of store state, valid until the store drops it.
      */
-    public ScopeMap resolveAt(String id, int64 now) {
+    public SessionEntry resolveAt(String id, int64 now) {
         LockGuard g #= this.gate.acquire();
         SessionEntry e = this.sessions.get(id);
         if (e == null) {
@@ -157,10 +157,12 @@ public class SessionStore {
             return null;
         }
         e.lastAccessed = now;
-        return e.map;
+        // A view of the map's slot, not of the local: `e` is a binding the
+        // compiler cannot prove is a borrow.
+        return this.sessions.get(id);
     }
 
-    public ScopeMap resolve(String id) {
+    public SessionEntry resolve(String id) {
         return this.resolveAt(id, this.clock.now());
     }
 

@@ -1,34 +1,36 @@
 # Session scope
 
-primavera's session scope is the per-client bag of framework-managed beans: a
-session outlives any single request and is shared across a client's requests,
-until it is invalidated or expires. It is the runtime that makes
-session-scoped `@Component` instances possible — created once per session,
-reachable ambiently from any request attached to that session, and dropped
-(destructors run) when the session ends. In the scope hierarchy
-(`docs/Connections.md`): `Message ⊂ Connection ⊂ Session ⊂ Principal ⊂
-Application`.
+primavera publishes the `Session` scope. A session outlives any single request
+and is shared across a client's requests until it is invalidated or expires. A
+component that names the scope is built once per session, reached from any
+request attached to that session, and freed when the session ends. In the scope
+hierarchy (`docs/Connections.md`): `Message ⊂ Connection ⊂ Session ⊂ Principal
+⊂ Application`.
 
-## The one idea: bind the *id* to the request, keep the *state* in the store
+```cajeta
+@Component(scope = "Session")
+public class Preferences {
+    public int32 count;
+    public Preferences() { this.count = 0; return; }
+}
 
-Because a session outlives the request, session state can never live in a
-request binding — a `FiberLocal`-held bag would drop when the request ends.
-The design splits the two lifetimes:
+SessionScope.create("sess-1");                 // at login
+SessionScope.attach("sess-1", () -> {
+    Preferences p = Preferences.__cajeta_inject();
+    p.count = p.count + 1;                     // kept for the next request
+});
+```
 
-- **`SessionStore`** (process-wide) owns the session state: an id-keyed map of
-  session bags, with TTL expiry and locking. This is the only owner; a bag
-  lives exactly as long as its store entry.
-- **`SessionScope.attach(id, body)`** binds only the session **id** — a cheap
-  owned `String` copy — via `FiberLocal` for the request's dynamic extent.
-  Every accessor resolves id → store *at access time*; nothing session-owned
-  is ever cached in the request. The id binding inherits `RequestScope`'s
-  propagation story: correct under both fiber-per-request and completion-port
-  executors, because the binding rides the logical request.
+## The state lives in the store, the id rides the request
 
-The web tier (Phase 4, over cajeta-http — currently deferred) will read the id
-from the transport (cookie / token) and wrap the handler in `attach`; handler
-code anywhere on the call path uses the static accessors with no parameter
-threading.
+- **`SessionStore`** (process-wide) owns the sessions: an id-keyed map of
+  `SessionEntry`, with TTL expiry and locking. Each entry is the `Session`
+  anchor (`@Scope("Session")` on the class), so the components built for a
+  session belong to its entry and are freed with it.
+- **`SessionScope.attach(id, body)`** binds the session **id** for the
+  request's extent and runs `body` with that session's entry current. An id
+  with no live session runs `body` sessionless, where a `Session` injection
+  throws `ScopeNotActiveException`.
 
 ## API
 
@@ -37,22 +39,18 @@ threading.
 | Method | Effect |
 |---|---|
 | `configure(idleTtlMillis, absoluteTtlMillis)` | set the store's TTLs (0 disables either) |
-| `create(String id)` | create the session — e.g. at login; an existing session under `id` is displaced and dropped |
-| `invalidate(String id)` | drop the session and all its beans — e.g. at logout |
+| `create(String id)` | create the session, e.g. at login; an existing session under `id` is displaced and freed |
+| `invalidate(String id)` | free the session and its components, e.g. at logout |
 | `evictExpired()` | sweep expired sessions; returns the evicted count |
+| `invalidateAll()` | free every session; returns the count |
 | `sessionCount()` | sessions currently in the store |
-| `attach(String id, () -> void body)` | run `body` with `id` bound as the current session |
+| `attach(String id, () -> void body)` | run `body` as a request of that session |
 | `isActive()` | an id is attached AND the store holds a live session for it |
-| `has(String typeName)` | whether a bean is bound in the current session |
-| `lookup(String typeName)` | the bean for `typeName`, or null |
-| `store(String typeName, #Object instance)` | bind `instance`, session takes ownership; throws when sessionless |
-| `materialize(String typeName, () -> #Object factory)` | create-and-store via `factory` iff unbound (see below) |
 
-`SessionStore` is also usable directly (the scope's static store is not
-exposed): `create/resolve/invalidate/evictExpired/count`, plus deterministic
-`createAt/resolveAt/evictExpiredAt(…, int64 now)` forms that take the
-timestamp explicitly — the self-tests drive expiry with a synthetic clock, no
-sleeping.
+`SessionStore` is also usable directly: `create/resolve/invalidate/evictExpired/count`,
+plus `createAt/resolveAt/evictExpiredAt(…, int64 now)` forms that take the
+timestamp explicitly, so tests drive expiry without sleeping. `resolve` returns
+the `SessionEntry`, and `entry.within(body)` runs `body` with it current.
 
 ## Expiry
 
@@ -65,35 +63,20 @@ Two independent TTLs, both disabled at 0:
 
 Enforcement is lazy on `resolve` — an expired session reads as absent and is
 evicted on the spot — **plus** the `evictExpired` sweep, so an idle server
-still frees stale sessions. Scheduling the periodic sweep belongs to the
-Phase-4 executor; until then call it opportunistically.
+still frees stale sessions. Call it periodically.
 
 ## Ownership & lifecycle
 
-The store owns everything transitively: `HashMap<String, SessionEntry>` owns
-its entries (toolchain >= 0.9.2 element ownership), each `SessionEntry` owns
-its `ScopeMap`, and the `ScopeMap` owns its beans. So every eviction path —
-idle/absolute expiry, the sweep, `invalidate`, and `create` displacing an
-existing id — drops the whole bag graph: bean destructors run, nothing leaks.
-`attach` ending drops only the id binding; the session persists.
-
-The get-or-create resolution path for a session-scoped component is the
-`materialize` + `lookup` pair:
-
-```cajeta
-SessionScope.materialize(key, () -> { return #(heap CartService()); });
-CartService cart = (CartService) SessionScope.lookup(key);
-```
-
-(Two calls, not one returning the bean: a multi-parameter function may not
-return a borrow — `CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM` — so the borrow
-comes from the single-param `lookup`.)
+The store owns its entries, and each entry anchors its session's components.
+Every eviction path (idle or absolute expiry, the sweep, `invalidate`, and
+`create` displacing an existing id) drops the entry and frees its components.
+`attach` ending frees nothing; the session persists.
 
 ## Concurrency
 
 The store is shared across all in-flight requests; every operation takes the
 internal `Lock` (fibers park; carriers don't block). What the lock does NOT
-cover: the `ScopeMap` a resolve hands back is a borrow of store state, valid
+cover: the `SessionEntry` a resolve hands back is a borrow of store state, valid
 until that session is invalidated or expires. v1 posture: invalidating a
 session that another in-flight request is actively using is a
 caller-coordination bug — the web tier serializes a session's requests or
@@ -102,4 +85,4 @@ defers invalidation to request end.
 ## v1 limitations
 
 - **Invalidate-while-in-use** is caller-coordinated (above).
-- **Sweep scheduling** is manual until the Phase-4 executor exists.
+- **Sweep scheduling** is the application's.

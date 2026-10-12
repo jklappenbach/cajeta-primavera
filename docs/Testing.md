@@ -7,8 +7,8 @@ scoped instance — under unit and integration tests alike.
 > (direct construction) works **today** for any constructor-injected component.
 > Layer 4 (the per-test `@Inject` override seam) is a **shipped core stdlib**
 > mechanism (singleton/class-typed; `docs/DI-override-hook.md`), driven via
-> cajeta-unit's `TestContext`. Layer 3 (`@Mock` codegen) and the `withRequestScope`
-> seeding helper are **planned** (`plan/DI-request-scope-and-test-enablers.md`).
+> cajeta-unit's `TestContext`. Layer 3 (`@Mock` codegen for interfaces) is **planned**
+> (primavera-web plan 0.2.6 in the cajeta repo).
 
 ## The one idea: overrides are compile-time graph substitutions
 
@@ -29,7 +29,7 @@ fits**; they compose.
 | 3 | per-test behaviour | `@Mock` codegen (configurable double) | planned |
 | 4 | per-test, DI-resolved dep | core `@Inject` override seam (`TestContext.bind`) | shipped (stdlib; singleton/class-typed) |
 
-Cross-cutting both is **scope seeding** (`withRequestScope`, §6) for request/session
+Cross-cutting both is **scope seeding** (providing a scoped component, §6) for request/session
 state rather than components.
 
 ## Layer 1 — whole-build type swap (`@TestComponent`)
@@ -138,15 +138,16 @@ primavera's contribution at this layer is policy, not mechanism: `@TestComponent
 (compile-time, Layer 1) and request-scope seeding sit *above* this core seam; the seam
 itself is the language's, so any framework or harness can use it.
 
-## Scope seeding (`withRequestScope`, planned)
+## Scoped state
 
-Orthogonal to component overrides: a request-handler test must also enter a request
-(or session) scope and seed it (`plan/DI-request-scope-and-test-enablers.md` §2.5),
-built over the shipped `RequestScope` (`docs/RequestScope.md`):
+A request-handler test runs the handler as a request, and seeds a scoped
+component by providing it before the code under test injects it:
 
 ```cajeta
-withRequestScope(seed -> seed.store("com.app.Session", fakeSession), () -> {
-    Response r = handler.handle(req);   // runs under a real request scope
+PrimaveraTest.request(() -> {
+    Gateway mock = heap MockGateway();
+    Components.provide(#mock);          // this request's Gateway
+    Response r = handler.handle(req);
     assert(r.status == 200);
 });
 ```
@@ -158,10 +159,11 @@ Components are swapped by Layers 1/3/4; *scoped state* is seeded here.
 ```cajeta
 // Layer 1: @TestComponent FakeRepository swapped in at compile time.
 // Layer 4: per-test gateway double via the core override seam.
-// Seeding: a faked session in request scope.
+// Seeding: a faked session component provided into the request.
 TestContext.bind(PaymentGateway.class, declinedGateway);
 try {
-    withRequestScope(seed -> seed.store("com.app.Session", fakeSession), () -> {
+    PrimaveraTest.request(() -> {
+        Components.provide(#fakeSession);
         Response r = checkoutHandler.handle(req);
         assert(r.status == 402);
     });

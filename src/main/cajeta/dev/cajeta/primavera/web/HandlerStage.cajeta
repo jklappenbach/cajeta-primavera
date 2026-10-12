@@ -1,7 +1,6 @@
 package dev.cajeta.primavera.web;
 
 import cajeta.lang.String;
-import dev.cajeta.primavera.context.RequestScope;
 import dev.cajeta.primavera.pipeline.Buffer;
 import dev.cajeta.primavera.pipeline.Kind;
 import dev.cajeta.primavera.pipeline.RequestContext;
@@ -22,14 +21,14 @@ public final class HandlerStage implements Stage {
     public int32 produces() { return Kind.BOUND(); }
 
     public Buffer inbound(Buffer buffer, RequestContext ctx) {
-        RouteMatch m = (RouteMatch) RequestScope.lookup(RouteMatch.KEY());
+        RouteMatch m = RouteMatch.__cajeta_inject();
         Endpoint e = this.endpoints.at(m.index());
         RequestView q = heap RequestView();
         q.bind(ctx.request());
         Response r = heap Response();
         r.bind(ctx.response());
         if (e.mode == BodyMode.JSON()) {
-            JsonBody body = (JsonBody) RequestScope.lookup(BindingStage.JSON_KEY());
+            JsonBody body = JsonBody.__cajeta_inject();
             (RequestView, JsonBody, Response) -> void h = e.json;
             h(q, body, r);
         } else if (e.mode == BodyMode.NONE()) {

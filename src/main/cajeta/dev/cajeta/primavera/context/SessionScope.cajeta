@@ -3,32 +3,30 @@ package dev.cajeta.primavera.context;
 import cajeta.concurrent.FiberLocal;
 
 /**
- * Session scope — ambient access to the *current* session for a request.
+ * The current session for a request (component-scopes spec §10.2).
  *
- * A session outlives any single request, so the session state itself lives
- * in the process-wide {@Link SessionStore}, never in a request binding.
- * What IS bound per-request is only the session **id** (a cheap owned
- * String) via `FiberLocal`, for the request's dynamic extent: the web tier
- * reads the id from the transport (cookie / token), wraps the handler in
- * `attach(id, body)`, and handler code anywhere on the call path reaches
- * the session bag through the static accessors with no parameter threading.
- * Like {@Link RequestScope}, the binding rides the fiber — correct under
- * both fiber-per-request and completion-port executors.
+ * A session outlives any single request, so it lives in the process-wide
+ * {@Link SessionStore}. What a request binds is only the session **id**, via
+ * `FiberLocal`, for its dynamic extent: the web tier reads the id from the
+ * transport (cookie or token) and wraps the handler in `attach(id, body)`.
+ * While `body` runs, the session's {@link SessionEntry} is current, so a
+ * `@Component(scope = "Session")` injected anywhere on the call path is that
+ * session's instance.
  *
  * ```cajeta
  * SessionScope.configure(30 * 60 * 1000, 12 * 60 * 60 * 1000);  // idle, absolute
  * SessionScope.create(sessionId);                 // at login
  * SessionScope.attach(sessionId, () -> {
- *     handler.handle(request);                    // lookup()/store() live here
- * });                                             // id binding pops; the session persists
+ *     Cart c = Cart.__cajeta_inject();            // this session's Cart
+ * });                                             // the session persists
  * ```
  *
- * The bag's lifetime is the store's: `attach` ending never frees session
- * beans — only `invalidate`, TTL expiry, or store teardown does.
+ * `attach` ending never frees a session's components: only `invalidate`, TTL
+ * expiry, or store teardown does.
  */
 public class SessionScope {
     // Process-wide session store and the per-request id binding. Owned
-    // statics, never handed out (see RequestScope.SCOPE).
+    // statics, never handed out.
     static SessionStore STORE = heap SessionStore();
     static FiberLocal<String> ID = heap FiberLocal<String>();
 
@@ -38,12 +36,12 @@ public class SessionScope {
         SessionScope.STORE.setAbsoluteTtl(absoluteTtlMillis);
     }
 
-    /** Create (or displace) the session under `sessionId` — e.g. at login. */
+    /** Create (or displace) the session under `sessionId`, e.g. at login. */
     public static void create(String sessionId) {
         SessionScope.STORE.create(sessionId);
     }
 
-    /** Drop the session under `sessionId` and all its beans — e.g. at logout. */
+    /** Drop the session under `sessionId` and its components, e.g. at logout. */
     public static void invalidate(String sessionId) {
         SessionScope.STORE.invalidate(sessionId);
     }
@@ -59,11 +57,10 @@ public class SessionScope {
     }
 
     /**
-     * Install `clock` (borrowed) as the ambient store's time source — the R1
-     * test seam for driving session expiry deterministically on the ambient
-     * path. The caller OWNS `clock` and must keep it alive until
-     * `useSystemClock()` (or `PrimaveraTest.reset()`) restores the default,
-     * before it drops.
+     * Install `clock` (borrowed) as the ambient store's time source, the test
+     * seam for driving session expiry deterministically. The caller OWNS
+     * `clock` and must keep it alive until `useSystemClock()` (or
+     * `PrimaveraTest.reset()`) restores the default, before it drops.
      */
     public static void useManualClock(ManualTimeSource clock) {
         SessionScope.STORE.setTimeSource(clock);
@@ -81,12 +78,24 @@ public class SessionScope {
 
     /**
      * Run `body` with `sessionId` bound as the current session for its
-     * dynamic extent. The binding owns a private copy of the id, so the
-     * caller's string is only borrowed for this call.
+     * dynamic extent. When the store holds a live session under the id, it
+     * is current while `body` runs; otherwise `body` runs sessionless, and a
+     * `Session` component injected there throws `ScopeNotActiveException`.
+     * The binding owns a private copy of the id.
      */
     public static void attach(String sessionId, () -> void body) {
         String owned #= sessionId.substring(0, sessionId.byteLength());
-        SessionScope.ID.where(#owned, body);
+        SessionScope.ID.where(#owned, () -> SessionScope.enter(body));
+    }
+
+    static void enter(() -> void body) {
+        SessionEntry e = SessionScope.STORE.resolve(SessionScope.ID.get());
+        if (e == null) {
+            body();
+            return;
+        }
+        e.within(body);
+        return;
     }
 
     /**
@@ -98,65 +107,5 @@ public class SessionScope {
             return false;
         }
         return SessionScope.STORE.resolve(SessionScope.ID.get()) != null;
-    }
-
-    // The current session's bag, or null when no id is attached or the
-    // session is gone/expired. Each access resolves id -> store fresh (and
-    // refreshes the idle clock) — the bag is never cached in the request.
-    static ScopeMap bag() {
-        if (SessionScope.ID.isBound() == false) {
-            return null;
-        }
-        return SessionScope.STORE.resolve(SessionScope.ID.get());
-    }
-
-    /** Whether a bean is bound for `typeName` in the current session. */
-    public static boolean has(String typeName) {
-        ScopeMap m = SessionScope.bag();
-        if (m == null) {
-            return false;
-        }
-        return m.has(typeName);
-    }
-
-    /** The bean bound for `typeName` in the current session, or null. */
-    public static Object lookup(String typeName) {
-        ScopeMap m = SessionScope.bag();
-        if (m == null) {
-            return null;
-        }
-        return m.lookup(typeName);
-    }
-
-    /**
-     * Store `instance` under `typeName` in the current session, taking
-     * ownership for the session's lifetime. Throws when no live session is
-     * attached — callers that may run sessionless guard with `isActive()`.
-     */
-    public static void store(String typeName, #Object instance) {
-        ScopeMap m = SessionScope.bag();
-        if (m == null) {
-            throw heap Exception("SessionScope.store: no live session attached");
-        }
-        m.store(typeName, #instance);
-    }
-
-    /**
-     * Create the bean for `typeName` via `factory` and store it in the
-     * current session, iff none is bound yet. Paired with `lookup`, this is
-     * the get-or-create resolution path a session-scoped @Component
-     * compiles down to (Phase 3; see RequestScope.materialize for why the
-     * pair, not one call). Throws when no live session is attached.
-     */
-    public static void materialize(String typeName, () -> #Object factory) {
-        ScopeMap m = SessionScope.bag();
-        if (m == null) {
-            throw heap Exception("SessionScope.materialize: no live session attached");
-        }
-        if (m.has(typeName)) {
-            return;
-        }
-        Object created #= factory();
-        m.store(typeName, #created);
     }
 }

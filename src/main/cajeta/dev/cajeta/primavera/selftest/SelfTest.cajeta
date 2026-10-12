@@ -1,49 +1,39 @@
 package dev.cajeta.primavera.selftest;
 
-import dev.cajeta.primavera.context.RequestScope;
-import dev.cajeta.primavera.context.ScopeMap;
+import cajeta.error.ScopeNotActiveException;
+import dev.cajeta.primavera.context.SessionEntry;
 import dev.cajeta.primavera.context.SessionScope;
 import dev.cajeta.primavera.context.SessionStore;
 import dev.cajeta.primavera.context.ManualTimeSource;
 import dev.cajeta.primavera.test.PrimaveraTest;
-import dev.cajeta.primavera.test.TrackedBean;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.unit.TestRunner;
 import cajeta.concurrent.AtomicInt32;
 
 /**
- * primavera's runtime self-test, on cajeta-unit's TestRunner — request scope
- * (enter / store / lookup / teardown / bean drop), session scope (store
- * lifecycle, idle + absolute TTL expiry, eviction sweep, ambient access
- * across requests), the materialize/lookup resolution path, and the executor
- * behaviors via the PrimaveraTest harness (unstructured handoff, structured
- * inherit).
+ * primavera's runtime self-test, on cajeta-unit's TestRunner: the `Request`
+ * and `Session` scopes primavera publishes (component-scopes spec §10), the
+ * session store's lifecycle and TTL expiry, and the fiber rules (a structured
+ * child shares the request, an unrelated fiber sees none).
  *
  * Test bodies mutate only static state (no mutable local capture in
  * closures); spawned probe workers record what they observed into statics
- * and the test asserts after the scope joins — a throw inside a worker fiber
- * is not a per-test failure signal, a recorded observation is.
+ * and the test asserts after the scope joins.
  *
  * Session expiry is tested deterministically through SessionStore's `...At`
- * methods, which take the timestamp explicitly — no sleeping, no wall clock.
+ * methods, which take the timestamp explicitly.
  *
  * Entry: `dev.cajeta.primavera.selftest.SelfTest.run` (returns 0 = all green).
  */
 public class SelfTest {
-    static int32 factoryCalls;
     static AtomicInt32 firstTouchTags = heap AtomicInt32(0);
     static AtomicInt32 firstTouchHits = heap AtomicInt32(0);
 
-    // Probe-worker observations (reset before each handoff/inherit test).
-    static boolean workerSawScope;
-    static int32 workerBeanTag;
-    static boolean workerBeanAlive;
-
-    static #Object makeBean() {
-        SelfTest.factoryCalls = SelfTest.factoryCalls + 1;
-        Bean nb = heap Bean(99);
-        return #nb;
-    }
+    // Probe-worker observations (reset before each fiber test).
+    static int32 workerTag;
+    static int32 seenTag;
+    static int32 seenCount;
+    static boolean refused;
 
     /** Assert with a label: fails the enclosing test with `label` as message. */
     static void req(boolean cond, String label) {
@@ -52,61 +42,77 @@ public class SelfTest {
         }
     }
 
-    // Static beanKey() accessor: method locals captured through nested lambdas
-    // (t.test -> harness -> body) fail to lower, statics resolve anywhere.
-    static String beanKey() {
-        return "dev.cajeta.primavera.selftest.Bean";
+    // The tag of the current request's probe, or -1 when no request is active.
+    static int32 requestTag() {
+        try {
+            RequestProbe p = RequestProbe.__cajeta_inject();
+            return p.tag;
+        } catch (ScopeNotActiveException e) {
+            return -1;
+        }
+    }
+
+    static void touchSession(int32 by) {
+        SessionProbe p = SessionProbe.__cajeta_inject();
+        p.count = p.count + by;
+        SelfTest.seenTag = p.tag;
+        SelfTest.seenCount = p.count;
+        return;
+    }
+
+    static void failRequest() {
+        RequestProbe p = RequestProbe.__cajeta_inject();
+        throw heap Exception("request failed after building its probe");
     }
 
     static void addRequestScopeTests(TestRunner t) {
-        t.test("request scope is inert outside a request", () -> {
-            SelfTest.req(RequestScope.isActive() == false, "no scope active before enter");
-            SelfTest.req(RequestScope.has(SelfTest.beanKey()) == false, "has() false with no scope");
-            SelfTest.req(RequestScope.lookup(SelfTest.beanKey()) == null, "lookup() null with no scope");
+        t.test("a Request component outside every request is refused", () -> {
+            SelfTest.req(SelfTest.requestTag() == -1, "injection outside a request throws ScopeNotActiveException");
         });
 
-        t.test("request lifecycle: store, lookup, content keys, drop at end", () -> {
-            Bean.drops = 0;
+        t.test("a Request component is one per request and freed at its end", () -> {
+            RequestProbe.reset();
             PrimaveraTest.request(() -> {
-                SelfTest.req(RequestScope.isActive(), "scope active inside enter");
-                SelfTest.req(RequestScope.current().count() == 0, "fresh scope is empty");
-
-                Bean b = heap Bean(42);
-                RequestScope.store(SelfTest.beanKey(), #b);
-
-                SelfTest.req(RequestScope.has(SelfTest.beanKey()), "bean present after store");
-                Object got = RequestScope.lookup(SelfTest.beanKey());
-                SelfTest.req(got != null, "lookup returns the bean");
-                Bean gb = (Bean) got;
-                SelfTest.req(gb.value == 42, "looked-up bean carries its stored state");
-
-                // Keys match by content, not identity (reflective type names
-                // are not guaranteed interned).
-                String key2 = "dev.cajeta.primavera.selftest." + "Bean";
-                SelfTest.req(RequestScope.has(key2), "distinct-but-equal key matches");
-
-                SelfTest.req(Bean.drops == 0, "bean alive for the whole request extent");
+                RequestProbe a = RequestProbe.__cajeta_inject();
+                RequestProbe b = RequestProbe.__cajeta_inject();
+                SelfTest.req(a.tag == b.tag, "two injections in one request get one instance");
+                SelfTest.req(RequestProbe.dropped() == 0, "the probe lives for the whole request");
+                SelfTest.seenTag = a.tag;
             });
-            SelfTest.req(RequestScope.isActive() == false, "no scope active after enter returns");
-            SelfTest.req(Bean.drops == 1, "scope end drops the owned bean");
+            SelfTest.req(RequestProbe.dropped() == 1, "the request's end frees its probe");
+            PrimaveraTest.request(() -> {
+                SelfTest.req(SelfTest.requestTag() != SelfTest.seenTag, "the next request builds its own");
+            });
+            SelfTest.req(RequestProbe.built() == 2 && RequestProbe.dropped() == 2, "one build and one drop per request");
+        });
+
+        t.test("a Request component is freed when the request throws", () -> {
+            RequestProbe.reset();
+            boolean threw = false;
+            try {
+                PrimaveraTest.request(() -> SelfTest.failRequest());
+            } catch (Exception e) {
+                threw = true;
+            }
+            SelfTest.req(threw, "the request's exception reaches the caller");
+            SelfTest.req(RequestProbe.built() == 1 && RequestProbe.dropped() == 1, "the thrown request still frees its probe");
         });
     }
 
     static void addSessionStoreTests(TestRunner t) {
         t.test("idle TTL: resolve refreshes; going idle expires and drops", () -> {
-            Bean.drops = 0;
+            SessionProbe.reset();
             SessionStore store = heap SessionStore();
             store.setIdleTtl(1000);
             store.createAt("s1", 1000);
 
-            ScopeMap bag = store.resolveAt("s1", 1500);
-            SelfTest.req(bag != null, "resolve within idle TTL");
-            Bean idleBean = heap Bean(7);
-            bag.store(SelfTest.beanKey(), #idleBean);
+            SessionEntry e = store.resolveAt("s1", 1500);
+            SelfTest.req(e != null, "resolve within idle TTL");
+            e.within(() -> SelfTest.touchSession(1));
 
             SelfTest.req(store.resolveAt("s1", 2400) != null, "idle clock refreshed by resolve");
             SelfTest.req(store.resolveAt("s1", 3500) == null, "idle-expired session reads absent");
-            SelfTest.req(Bean.drops == 1, "idle expiry drops the session's bean");
+            SelfTest.req(SessionProbe.dropped() == 1, "idle expiry drops the session's component");
             SelfTest.req(store.count() == 0, "expired session evicted on resolve");
         });
 
@@ -119,97 +125,95 @@ public class SelfTest {
         });
 
         t.test("eviction sweep drops exactly the expired sessions", () -> {
-            Bean.drops = 0;
+            SessionProbe.reset();
             SessionStore store = heap SessionStore();
             store.setIdleTtl(1000);
             store.createAt("s1", 0);
             store.createAt("s2", 0);
             store.createAt("s3", 5000);
-            ScopeMap bag = store.resolveAt("s1", 0);
-            Bean sweepBean = heap Bean(1);
-            bag.store(SelfTest.beanKey(), #sweepBean);
+            SessionEntry e = store.resolveAt("s1", 0);
+            e.within(() -> SelfTest.touchSession(1));
 
             SelfTest.req(store.evictExpiredAt(6000) == 2, "sweep evicts the two expired");
             SelfTest.req(store.count() == 1, "fresh session survives the sweep");
-            SelfTest.req(Bean.drops == 1, "sweep drops evicted sessions' beans");
+            SelfTest.req(SessionProbe.dropped() == 1, "sweep drops evicted sessions' components");
         });
 
         t.test("invalidate and re-create displacement both drop", () -> {
-            Bean.drops = 0;
+            SessionProbe.reset();
             SessionStore store = heap SessionStore();
             store.createAt("s1", 0);
-            ScopeMap displacedBag = store.resolveAt("s1", 0);
-            Bean displacedBean = heap Bean(1);
-            displacedBag.store(SelfTest.beanKey(), #displacedBean);
+            SessionEntry displaced = store.resolveAt("s1", 0);
+            displaced.within(() -> SelfTest.touchSession(1));
 
             store.createAt("s1", 10);
-            SelfTest.req(Bean.drops == 1, "re-create displaces and drops the old session");
+            SelfTest.req(SessionProbe.dropped() == 1, "re-create displaces and drops the old session");
 
-            ScopeMap freshBag = store.resolveAt("s1", 10);
-            Bean freshBean = heap Bean(2);
-            freshBag.store(SelfTest.beanKey(), #freshBean);
+            SessionEntry fresh = store.resolveAt("s1", 10);
+            fresh.within(() -> SelfTest.touchSession(1));
             store.invalidate("s1");
-            SelfTest.req(Bean.drops == 2, "invalidate drops the session's bean");
+            SelfTest.req(SessionProbe.dropped() == 2, "invalidate drops the session's component");
             SelfTest.req(store.resolveAt("s1", 10) == null, "invalidated session reads absent");
         });
 
         t.test("invalidateAll drops every session", () -> {
-            Bean.drops = 0;
+            SessionProbe.reset();
             SessionStore store = heap SessionStore();
             store.createAt("a", 0);
             store.createAt("b", 0);
-            ScopeMap bagA = store.resolveAt("a", 0);
-            Bean beanA = heap Bean(1);
-            bagA.store(SelfTest.beanKey(), #beanA);
+            SessionEntry e = store.resolveAt("a", 0);
+            e.within(() -> SelfTest.touchSession(1));
 
             SelfTest.req(store.invalidateAll() == 2, "both sessions dropped");
             SelfTest.req(store.count() == 0, "store empty afterward");
-            SelfTest.req(Bean.drops == 1, "invalidateAll drops the beans");
+            SelfTest.req(SessionProbe.dropped() == 1, "invalidateAll drops the components");
         });
     }
 
     static void addSessionScopeTests(TestRunner t) {
-        t.test("session beans persist across requests; unknown id is sessionless", () -> {
+        t.test("a Session component survives across requests in one session", () -> {
             PrimaveraTest.reset();
-            Bean.drops = 0;
+            SessionProbe.reset();
 
             SelfTest.req(SessionScope.isActive() == false, "no session active unattached");
 
             PrimaveraTest.freshSession("sess-A", () -> {
                 SelfTest.req(SessionScope.isActive(), "session active inside attach");
-                Bean sessBean = heap Bean(11);
-                SessionScope.store(SelfTest.beanKey(), #sessBean);
+                SelfTest.touchSession(11);
             });
-            SelfTest.req(Bean.drops == 0, "attach end does NOT drop session beans");
+            SelfTest.req(SessionProbe.dropped() == 0, "attach end does NOT drop the session's component");
+            int32 firstTag = SelfTest.seenTag;
 
-            PrimaveraTest.resumeSession("sess-A", () -> {
-                Object got = SessionScope.lookup(SelfTest.beanKey());
-                SelfTest.req(got != null, "bean persists across requests");
-                Bean gb = (Bean) got;
-                SelfTest.req(gb.value == 11, "persisted bean carries its state");
-            });
+            PrimaveraTest.resumeSession("sess-A", () -> SelfTest.touchSession(1));
+            SelfTest.req(SelfTest.seenTag == firstTag, "a later request gets the same instance");
+            SelfTest.req(SelfTest.seenCount == 12, "the instance keeps its state across requests");
+            SelfTest.req(SessionProbe.built() == 1, "built once for the session");
 
+            SelfTest.refused = false;
             PrimaveraTest.resumeSession("sess-B", () -> {
                 SelfTest.req(SessionScope.isActive() == false, "unknown id is not a live session");
-                SelfTest.req(SessionScope.lookup(SelfTest.beanKey()) == null, "lookup null for unknown session");
+                try {
+                    SessionProbe p = SessionProbe.__cajeta_inject();
+                } catch (ScopeNotActiveException e) {
+                    SelfTest.refused = true;
+                }
             });
+            SelfTest.req(SelfTest.refused, "an unknown session has no Session components");
         });
 
-        t.test("sessions are isolated; invalidate + reset drop beans", () -> {
+        t.test("sessions are isolated; invalidate and reset drop their components", () -> {
             PrimaveraTest.reset();
-            Bean.drops = 0;
+            SessionProbe.reset();
 
-            PrimaveraTest.freshSession("sess-A", () -> {
-                Bean sessBean = heap Bean(11);
-                SessionScope.store(SelfTest.beanKey(), #sessBean);
-            });
-            PrimaveraTest.freshSession("sess-C", () -> {
-                SelfTest.req(SessionScope.has(SelfTest.beanKey()) == false, "sessions are isolated");
-            });
+            PrimaveraTest.freshSession("sess-A", () -> SelfTest.touchSession(11));
+            PrimaveraTest.freshSession("sess-C", () -> SelfTest.touchSession(1));
+            SelfTest.req(SelfTest.seenCount == 1, "sessions are isolated");
+            SelfTest.req(SessionProbe.built() == 2, "each session builds its own");
 
             SessionScope.invalidate("sess-A");
-            SelfTest.req(Bean.drops == 1, "invalidate drops the session's bean");
+            SelfTest.req(SessionProbe.dropped() == 1, "invalidate drops the session's component");
             PrimaveraTest.reset();
+            SelfTest.req(SessionProbe.dropped() == 2, "reset drops the rest");
             SelfTest.req(SessionScope.sessionCount() == 0, "reset leaves the store empty");
         });
     }
@@ -217,7 +221,7 @@ public class SelfTest {
     static void addClockSeamTests(TestRunner t) {
         t.test("ambient session expiry via injected manual clock", () -> {
             PrimaveraTest.reset();
-            Bean.drops = 0;
+            SessionProbe.reset();
 
             // Test owns the clock; the store borrows it (restored before drop).
             ManualTimeSource clk = heap ManualTimeSource(1000);
@@ -227,170 +231,82 @@ public class SelfTest {
             SessionScope.create("m1");
             PrimaveraTest.resumeSession("m1", () -> {
                 SelfTest.req(SessionScope.isActive(), "session live at t=1000 (ambient path)");
-                Bean b = heap Bean(5);
-                SessionScope.store(SelfTest.beanKey(), #b);
+                SelfTest.touchSession(1);
             });
 
-            // Advance past the idle TTL — no ...At form, pure ambient resolve.
             clk.advance(1500);   // t=2500, 1500ms since last access at 1000
             PrimaveraTest.resumeSession("m1", () -> {
                 SelfTest.req(SessionScope.isActive() == false, "idle-expired on the ambient path");
             });
-            SelfTest.req(Bean.drops == 1, "ambient expiry dropped the session bean");
+            SelfTest.req(SessionProbe.dropped() == 1, "ambient expiry dropped the session's component");
 
             // Restore the system clock BEFORE clk drops (the borrow contract).
             SessionScope.useSystemClock();
         });
     }
 
-    static void addMaterializeTests(TestRunner t) {
-        t.test("request materialize: factory once, identity stable, drops at end", () -> {
-            Bean.drops = 0;
-            SelfTest.factoryCalls = 0;
-            PrimaveraTest.request(() -> {
-                RequestScope.materialize(SelfTest.beanKey(), () -> { return #(SelfTest.makeBean()); });
-                Object first = RequestScope.lookup(SelfTest.beanKey());
-                SelfTest.req(first != null, "created on first access");
-                SelfTest.req(SelfTest.factoryCalls == 1, "factory ran once");
-
-                RequestScope.materialize(SelfTest.beanKey(), () -> { return #(SelfTest.makeBean()); });
-                Object second = RequestScope.lookup(SelfTest.beanKey());
-                SelfTest.req(SelfTest.factoryCalls == 1, "second access does not re-run factory");
-                SelfTest.req(first == second, "same instance for the request's lifetime");
-            });
-            SelfTest.req(Bean.drops == 1, "materialized bean drops at request end");
-        });
-
-        t.test("session materialize: factory once across requests, drops on invalidate", () -> {
-            PrimaveraTest.reset();
-            Bean.drops = 0;
-            SelfTest.factoryCalls = 0;
-            PrimaveraTest.freshSession("sess-G", () -> {
-                SessionScope.materialize(SelfTest.beanKey(), () -> { return #(SelfTest.makeBean()); });
-                SelfTest.req(SessionScope.lookup(SelfTest.beanKey()) != null, "created on first access");
-            });
-            PrimaveraTest.resumeSession("sess-G", () -> {
-                SessionScope.materialize(SelfTest.beanKey(), () -> { return #(SelfTest.makeBean()); });
-                SelfTest.req(SessionScope.lookup(SelfTest.beanKey()) != null, "resolves on later request");
-                SelfTest.req(SelfTest.factoryCalls == 1, "factory ran once across requests");
-            });
-            SessionScope.invalidate("sess-G");
-            SelfTest.req(Bean.drops == 1, "session bean drops on invalidate");
-        });
-    }
-
-    // ---- executor-behavior probes (PrimaveraTest harness) ----
-
-    static void observeScopeInWorker() {
-        String trackedKey = "dev.cajeta.primavera.test.TrackedBean";
-        SelfTest.workerSawScope = RequestScope.isActive();
-        SelfTest.workerBeanAlive = (TrackedBean.drops == 0);
-        Object got = RequestScope.lookup(trackedKey);
-        if (got != null) {
-            TrackedBean tb = (TrackedBean) got;
-            SelfTest.workerBeanTag = tb.tag;
-        } else {
-            SelfTest.workerBeanTag = -1;
-        }
-    }
+    // ---- fiber rules (component-scopes spec 4.11 to 4.13) ----
 
     static async void firstTouchProbe() {
         int32 tag = SelfTest.firstTouchTags.fetchAdd(1) + 100;
         PrimaveraTest.request(() -> {
-            TrackedBean mine = heap TrackedBean(tag);
-            RequestScope.store("dev.cajeta.primavera.test.TrackedBean", #mine);
-            Object got = RequestScope.lookup("dev.cajeta.primavera.test.TrackedBean");
-            if (got != null) {
-                TrackedBean tb = (TrackedBean) got;
-                if (tb.tag == tag) { SelfTest.firstTouchHits.fetchAdd(1); }
-            }
+            RequestProbe a = RequestProbe.__cajeta_inject();
+            RequestProbe b = RequestProbe.__cajeta_inject();
+            if (a.tag == b.tag) { SelfTest.firstTouchHits.fetchAdd(1); }
         });
         String sid = "first-touch-" + tag;
         SessionScope.create(sid);
         SessionScope.attach(sid, () -> {
-            TrackedBean mine = heap TrackedBean(tag);
-            SessionScope.store("dev.cajeta.primavera.test.TrackedBean", #mine);
-            Object got = SessionScope.lookup("dev.cajeta.primavera.test.TrackedBean");
-            if (got != null) {
-                TrackedBean tb = (TrackedBean) got;
-                if (tb.tag == tag) { SelfTest.firstTouchHits.fetchAdd(1); }
-            }
+            SessionProbe a = SessionProbe.__cajeta_inject();
+            SessionProbe b = SessionProbe.__cajeta_inject();
+            if (a.tag == b.tag) { SelfTest.firstTouchHits.fetchAdd(1); }
         });
         SessionScope.invalidate(sid);
     }
 
     static void addFirstTouchTests(TestRunner t) {
         t.test("first touch of both scopes from eight parallel fibers", () -> {
-            TrackedBean.resetDrops();
+            RequestProbe.reset();
+            SessionProbe.reset();
             SelfTest.firstTouchHits.store(0);
             scope {
                 for (int32 i = 0; i < 8; i = i + 1) {
                     spawn firstTouchProbe();
                 }
             }
-            SelfTest.req(SelfTest.firstTouchHits.load() == 16, "every fiber saw its own bean in both scopes");
-            SelfTest.req(TrackedBean.drops == 16, "every request bag and session bag dropped");
+            SelfTest.req(SelfTest.firstTouchHits.load() == 16, "every fiber saw one instance in both scopes");
+            SelfTest.req(RequestProbe.dropped() == 8 && SessionProbe.dropped() == 8, "every request and session freed its component");
         });
     }
 
     static async void unrelatedWorkerProbe() {
-        SelfTest.workerSawScope = RequestScope.isActive();
+        SelfTest.workerTag = SelfTest.requestTag();
     }
 
     static async void structuredChildProbe() {
-        SelfTest.observeScopeInWorker();
+        SelfTest.workerTag = SelfTest.requestTag();
     }
 
-    static void addExecutorTests(TestRunner t) {
-        // NOTE: the seed lambdas use the SelfTest.beanKey() literal inline — a method local
-        // captured through two lambda levels (t.test -> harness -> seed)
-        // fails to lower (non-addressable property).
-
-        t.test("scope follows the request across an unstructured handoff", () -> {
-            TrackedBean.resetDrops();
-            SelfTest.workerSawScope = false;
-            SelfTest.workerBeanTag = 0;
-            SelfTest.workerBeanAlive = false;
-
-            PrimaveraTest.requestAcrossHandoff(
-                () -> {
-                    TrackedBean seeded = heap TrackedBean(42);
-                    RequestScope.store("dev.cajeta.primavera.test.TrackedBean", #seeded);
-                },
-                () -> {
-                    SelfTest.observeScopeInWorker();
-                });
-
-            SelfTest.req(SelfTest.workerSawScope, "worker saw the request scope via the snapshot");
-            SelfTest.req(SelfTest.workerBeanTag == 42, "worker resolved the seeded bean");
-            SelfTest.req(SelfTest.workerBeanAlive, "bag alive while the continuation ran");
-            SelfTest.req(TrackedBean.drops == 1, "bag dropped when the extent closed, not before");
-        });
-
-        t.test("an unrelated fiber without the snapshot sees no scope", () -> {
-            SelfTest.workerSawScope = true;
+    static void addFiberTests(TestRunner t) {
+        t.test("an unrelated fiber sees no request", () -> {
+            SelfTest.workerTag = 0;
             scope {
                 spawn unrelatedWorkerProbe();
             }
-            SelfTest.req(SelfTest.workerSawScope == false, "no ambient scope leaks to unrelated fibers");
+            SelfTest.req(SelfTest.workerTag == -1, "no request leaks to an unrelated fiber");
         });
 
-        t.test("a structured child fiber inherits the request scope", () -> {
-            TrackedBean.resetDrops();
-            SelfTest.workerSawScope = false;
-            SelfTest.workerBeanTag = 0;
-
+        t.test("a structured child fiber shares the request", () -> {
+            RequestProbe.reset();
+            SelfTest.workerTag = 0;
             PrimaveraTest.request(() -> {
-                TrackedBean seeded = heap TrackedBean(7);
-                RequestScope.store("dev.cajeta.primavera.test.TrackedBean", #seeded);
+                SelfTest.seenTag = SelfTest.requestTag();
                 scope {
                     spawn structuredChildProbe();
                 }
             });
-
-            SelfTest.req(SelfTest.workerSawScope, "structured child saw the scope (inherit on spawn)");
-            SelfTest.req(SelfTest.workerBeanTag == 7, "structured child resolved the seeded bean");
-            SelfTest.req(TrackedBean.drops == 1, "bag dropped at request end after the join");
+            SelfTest.req(SelfTest.workerTag == SelfTest.seenTag, "the child injects the request's instance");
+            SelfTest.req(RequestProbe.dropped() == 1, "freed at request end, after the join");
         });
     }
 
@@ -403,8 +319,7 @@ public class SelfTest {
         SelfTest.addSessionStoreTests(t);
         SelfTest.addSessionScopeTests(t);
         SelfTest.addClockSeamTests(t);
-        SelfTest.addMaterializeTests(t);
-        SelfTest.addExecutorTests(t);
+        SelfTest.addFiberTests(t);
         PipelineSelfTest.add(t);
         WebSelfTest.add(t);
         IdentitySelfTest.add(t);

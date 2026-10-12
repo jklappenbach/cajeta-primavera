@@ -1,0 +1,31 @@
+package dev.cajeta.primavera.context;
+
+import cajeta.aot.Scope;
+
+/**
+ * Publishes the `Request` scope (component-scopes spec §10.1): one activation
+ * of {@link #run} is one request. A `@Component(scope = "Request")` built
+ * inside it is one instance per request, freed when `run` returns or throws.
+ *
+ * ```cajeta
+ * @Component(scope = "Request")
+ * public class Cart { public Cart() { return; } }
+ *
+ * Requests.run(() -> {
+ *     Cart c = Cart.__cajeta_inject();   // the same Cart for the whole request
+ * });                                    // the Cart is freed here
+ * ```
+ *
+ * A task spawned inside a `scope { }` block shares the request. A detached
+ * task, or one handed a `FiberContext`, sees no request and takes what it
+ * needs as owned arguments.
+ */
+public final class Requests {
+
+    /** Runs `body` as one request. */
+    @Scope("Request")
+    public static void run(() -> void body) {
+        body();
+        return;
+    }
+}

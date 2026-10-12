@@ -1,0 +1,31 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.aot.Component;
+import cajeta.concurrent.AtomicInt32;
+
+/** A `Request` component that counts its builds and drops, for the scope tests. */
+@Component(scope = "Request")
+public class RequestProbe {
+    static AtomicInt32 builds = heap AtomicInt32(0);
+    static AtomicInt32 drops = heap AtomicInt32(0);
+
+    public int32 tag;
+
+    public RequestProbe() {
+        this.tag = RequestProbe.builds.fetchAdd(1) + 1;
+        return;
+    }
+
+    public ~RequestProbe() {
+        RequestProbe.drops.fetchAdd(1);
+    }
+
+    public static void reset() {
+        RequestProbe.builds.store(0);
+        RequestProbe.drops.store(0);
+        return;
+    }
+
+    public static int32 built() { return RequestProbe.builds.load(); }
+    public static int32 dropped() { return RequestProbe.drops.load(); }
+}

@@ -236,10 +236,10 @@ false-positive wiring failures (Quarkus ArC removes unused beans and "can't
 detect programmatic lookup via `CDI.current()`", forcing `@Unremovable`).
 [Dagger testing][dt], [Hilt testing][ht], [Quarkus mocking][qm]
 
-> **primavera answer.** We already shipped the seam: **seed the scope with
-> the double under the real key before the code under test runs**
-> (`PrimaveraTest.request`/`freshSession` + `RequestScope.store`;
-> `materialize`'s has-check short-circuits the real factory), plus
+> **primavera answer.** We already shipped the seam: **provide the double
+> into the scope before the code under test injects it**
+> (`PrimaveraTest.request`/`freshSession` + `Components.provide`; the
+> injection then gets the double instead of building one), plus
 > cajeta-unit `TestContext` for `@Inject` overrides. This sidesteps the
 > incumbents' worst problems by construction: no graph regeneration per test
 > (scopes are runtime stores, not build-frozen components → no Hilt-style

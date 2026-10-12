@@ -2,7 +2,7 @@ package dev.cajeta.primavera.web;
 
 import cajeta.lang.String;
 import dev.cajeta.http.HttpResponse;
-import dev.cajeta.primavera.context.RequestScope;
+import cajeta.aot.Components;
 import dev.cajeta.primavera.pipeline.Buffer;
 import dev.cajeta.primavera.pipeline.Kind;
 import dev.cajeta.primavera.pipeline.RequestContext;
@@ -11,7 +11,7 @@ import dev.cajeta.primavera.pipeline.Stage;
 /**
  * Matches the request to an endpoint and binds its path parameters, RAW to
  * ROUTED. A miss answers 404, 405 with Allow, or 413 and ends the request;
- * a match binds a {@link RouteMatch} in the request scope.
+ * a match provides a {@link RouteMatch} to the request.
  */
 public final class RoutingStage implements Stage {
 
@@ -34,7 +34,7 @@ public final class RoutingStage implements Stage {
             return #= buffer;
         }
         RouteMatch m = heap RouteMatch(i);
-        RequestScope.store(RouteMatch.KEY(), #m);
+        Components.provide(#m);
         return #= buffer;
     }
 

@@ -85,43 +85,33 @@ and a hook for role-specific defaults:
 
 ### 3.3 Request scope — **✅ shipped**
 
-The per-request bag over `FiberLocal`, correct under both fiber-per-connection and
-event-driven executors. Full spec: [`RequestScope.md`](../RequestScope.md). A
-request-scoped component resolves through `RequestScope` get-or-create rather than
-the singleton path (wired at the web boundary, §6).
+primavera publishes the `Request` scope on `Requests.run`, the method that runs
+one request (component-scopes spec §10.1); `WebServer` runs every request
+through it. A `@Component(scope = "Request")` is one instance per request,
+freed when the request returns or throws. Full spec:
+[`RequestScope.md`](../RequestScope.md).
 
-### 3.4 Session scope — **✅ shipped** (2026-07-19)
+### 3.4 Session scope — **✅ shipped**
 
-A session outlives a single request and is shared across a client's requests, so it
-is **not** a `FiberLocal` binding — it is an owning, id-keyed, expiring,
-concurrency-safe store. Shipped as
-`dev.cajeta.primavera.context.{SessionStore, SessionEntry, SessionScope}`:
+A session outlives a single request and is shared across a client's requests,
+so it lives in an owning, id-keyed, expiring, concurrency-safe store,
+`dev.cajeta.primavera.context.{SessionStore, SessionEntry, SessionScope}`.
+`SessionEntry` publishes the `Session` scope (`@Scope("Session")` on the class),
+so a `@Component(scope = "Session")` belongs to its session's entry and is freed
+when the store drops it: expiry, the sweep, `invalidate`, or displacement.
 
 ```cajeta
 class SessionStore {                     // process-wide, owning, id-keyed
-    void create(String id);              // displaces (drops) an existing session
-    ScopeMap resolve(String id);         // null when absent/expired; refreshes idle
-    void invalidate(String id);          // drops the session + its bean graph
+    void create(String id);              // displaces (frees) an existing session
+    SessionEntry resolve(String id);     // null when absent/expired; refreshes idle
+    void invalidate(String id);          // frees the session and its components
     int32 evictExpired();                // sweep; returns evicted count
-    // expiry: idle TTL + absolute TTL (0 = disabled); Lock/LockGuard-guarded;
-    // Clock.millisTime(); deterministic `...At(id, now)` forms for tests.
 }
-class SessionScope {                     // ambient access to the current session
-    static void attach(String id, () -> void body);  // binds the id per request
+class SessionScope {                     // the current session for a request
+    static void attach(String id, () -> void body);  // runs body with the session current
     static boolean isActive();
-    static Object lookup(String typeName);
-    static void store(String typeName, #Object instance);
-    static void materialize(String typeName, () -> #Object factory);
-    // binds the session ID (an owned String copy) via FiberLocal for the request
-    // extent; the session map's lifetime is the store's, never the request binding's.
 }
 ```
-
-> The former owning-collections **blocker is resolved** — toolchain 0.9.2's
-> element-ownership work made collections own their `#`-transferred elements, so
-> every eviction path (expiry, sweep, invalidate, displacement) drops the bag and
-> its beans. Verified by drop-tracking; pinned by the runtime self-tests. See
-> `plan/primavera-plan.md` and `docs/SessionScope.md`.
 
 ### 3.5 Connection & principal scopes + presence — **per spec**
 

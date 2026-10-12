@@ -25,8 +25,9 @@ vocabulary with no framework dependency (no Java-style
 
 primavera is the opinion assembled over the core substrate:
 
-- **Request / session scope** — non-identity scopes keyed on the logical request,
-  over `cajeta.concurrent.FiberLocal`. See [`RequestScope.md`](RequestScope.md).
+- **Request / session scope** — the `Request` and `Session` scopes, published
+  for the language's `@Component(scope = ...)`. See [`RequestScope.md`](RequestScope.md)
+  and [`SessionScope.md`](SessionScope.md).
 - **Web model** — `@RestServer` / `@Rest` annotation-driven endpoints + auto-serde,
   layered on the [`cajeta-http`](https://github.com/jklappenbach/cajeta-http) library
   (HTTP/WS/SSE over the `cajeta.io.net` transport). primavera owns the *policy*, not

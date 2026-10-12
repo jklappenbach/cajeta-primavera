@@ -1,27 +1,24 @@
 package dev.cajeta.primavera.test;
 
-import cajeta.concurrent.Channel;
-import cajeta.concurrent.FiberContext;
-import dev.cajeta.primavera.context.RequestScope;
+import dev.cajeta.primavera.context.Requests;
 import dev.cajeta.primavera.context.SessionScope;
 
 /**
- * primavera's test facade (Phase 5): scope harnesses for exercising
- * request- and session-scoped code from tests. Deliberately free of any
- * cajeta-unit dependency — assertions are the test framework's job; this
- * class only stands scopes up, tears them down, and simulates the executor
- * behaviors a unit test cannot otherwise reach. Pair it with cajeta-unit's
+ * primavera's test facade: harnesses for exercising `Request`- and
+ * `Session`-scoped code from tests. Deliberately free of any cajeta-unit
+ * dependency: assertions are the test framework's job; this class only
+ * stands scopes up and tears them down. Pair it with cajeta-unit's
  * `TestRunner`/`Assert`/mocks (and `TestContext` for `@Inject` overrides in
  * `--profile=test` builds).
  *
- * Mocking a scoped bean needs no special machinery: seed the scope with the
- * mock under the real key BEFORE the code under test runs — `materialize`'s
- * has() check then short-circuits the real factory:
+ * Mocking a scoped component needs no special machinery: provide the mock
+ * BEFORE the code under test injects it, and that injection gets the mock.
  *
  * ```cajeta
  * PrimaveraTest.request(() -> {
- *     RequestScope.store(key, #(heap MockGateway()));   // seeded mock wins
- *     handler.handle(request);                          // resolves the mock
+ *     Gateway mock = heap MockGateway();
+ *     Components.provide(#mock);           // the request's Gateway is the mock
+ *     handler.handle(request);
  * });
  * ```
  *
@@ -29,22 +26,16 @@ import dev.cajeta.primavera.context.SessionScope;
  * would otherwise bleed sessions and TTL config across tests.
  */
 public class PrimaveraTest {
-    // The in-flight handoff snapshot. Owned static rather than a
-    // Channel<FiberContext> payload: transferring the snapshot itself
-    // through Optional/channel slots crashes in the worker (ownership of
-    // the snapshot is claimed twice); the channels below carry only
-    // rendezvous signals. Overwritten (displaced) by the next handoff.
-    static FiberContext captured;
 
-    /** Run `body` inside a fresh request scope (drops with all its beans). */
+    /** Run `body` as one request; its `Request` components are freed at its end. */
     public static void request(() -> void body) {
-        RequestScope.enter(body);
+        Requests.run(body);
     }
 
     /**
-     * Create a FRESH session under `id` (displacing — and dropping — any
-     * prior session with that id) and run `body` attached to it. The
-     * canonical per-test entry: the test always starts from a clean bag.
+     * Create a FRESH session under `id` (displacing, and dropping, any prior
+     * session with that id) and run `body` attached to it. The canonical
+     * per-test entry: the test always starts from a clean session.
      */
     public static void freshSession(String id, () -> void body) {
         SessionScope.create(id);
@@ -52,8 +43,8 @@ public class PrimaveraTest {
     }
 
     /**
-     * Attach to an EXISTING session and run `body` — a later "request" of
-     * the same client. Pair with `freshSession` to test cross-request
+     * Attach to an EXISTING session and run `body`, a later request of the
+     * same client. Pair with `freshSession` to test cross-request
      * persistence; attaching to an id that was never created runs `body`
      * sessionless (isActive() false), which is itself a testable state.
      */
@@ -62,9 +53,9 @@ public class PrimaveraTest {
     }
 
     /**
-     * Restore session state to a blank slate: drop every session (beans
-     * free) and disable both TTLs. Call between tests — the store is
-     * process-wide and never resets itself.
+     * Restore session state to a blank slate: drop every session (their
+     * components free) and disable both TTLs. Call between tests: the store
+     * is process-wide and never resets itself.
      */
     public static void reset() {
         SessionScope.invalidateAll();
@@ -72,48 +63,5 @@ public class PrimaveraTest {
         // Restore the system clock so a prior test's ManualTimeSource (which
         // the store only borrowed) is no longer referenced before it drops.
         SessionScope.useSystemClock();
-    }
-
-    /**
-     * Simulate the completion-port executor's unstructured handoff — the
-     * path a thread-per-request-only test can never exercise. `pre` runs
-     * inside a fresh request scope on the originating fiber (seed beans,
-     * do "pre-I/O" work); the harness then captures a `FiberContext`
-     * snapshot and hands it to a WORKER fiber that was spawned with no
-     * request bindings (as a pool worker is); the worker installs the
-     * snapshot and runs `continuation` under it. A test that stashes state
-     * somewhere fiber- or thread-pinned instead of in the scope fails here.
-     *
-     * Lifetime contract (deliberate, matching FiberLocal Layer 3): the
-     * originating request extent is held OPEN — rendezvous on `done` —
-     * until the continuation finishes, because a snapshot does NOT keep
-     * the request bag alive past its extent; the bag and its beans drop
-     * when this method returns, never earlier.
-     */
-    public static void requestAcrossHandoff(() -> void pre, () -> void continuation) {
-        Channel<int32> ready = heap Channel<int32>(1);
-        Channel<int32> done = heap Channel<int32>(1);
-        // The producer side lives on a HandoffRun object: a captured function
-        // param cannot be invoked from inside a nested lambda (bare-call
-        // member resolution), but a function FIELD invoked from a method can
-        // (the FilterStream `this.pred(v)` pattern).
-        HandoffRun run = heap HandoffRun(pre, ready, done);
-        scope {
-            // Spawned BEFORE any request binding exists on this fiber, so
-            // the worker inherits nothing — the snapshot is the only
-            // carrier, exactly like a worker-pool fiber.
-            spawn handoffWorker(ready, done, continuation);
-            RequestScope.enter(() -> {
-                run.insideScope();
-            });
-        }
-    }
-
-    static async void handoffWorker(Channel<int32> ready,
-                                    Channel<int32> done,
-                                    () -> void continuation) {
-        ready.receive();
-        PrimaveraTest.captured.run(continuation);
-        done.send(1);
     }
 }

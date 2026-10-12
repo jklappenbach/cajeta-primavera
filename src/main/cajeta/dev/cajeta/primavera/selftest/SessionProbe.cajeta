@@ -1,0 +1,33 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.aot.Component;
+import cajeta.concurrent.AtomicInt32;
+
+/** A `Session` component that counts its builds and drops, for the scope tests. */
+@Component(scope = "Session")
+public class SessionProbe {
+    static AtomicInt32 builds = heap AtomicInt32(0);
+    static AtomicInt32 drops = heap AtomicInt32(0);
+
+    public int32 tag;
+    public int32 count;
+
+    public SessionProbe() {
+        this.tag = SessionProbe.builds.fetchAdd(1) + 1;
+        this.count = 0;
+        return;
+    }
+
+    public ~SessionProbe() {
+        SessionProbe.drops.fetchAdd(1);
+    }
+
+    public static void reset() {
+        SessionProbe.builds.store(0);
+        SessionProbe.drops.store(0);
+        return;
+    }
+
+    public static int32 built() { return SessionProbe.builds.load(); }
+    public static int32 dropped() { return SessionProbe.drops.load(); }
+}

@@ -1,5 +1,6 @@
 package dev.cajeta.primavera.web;
 
+import cajeta.aot.Component;
 import cajeta.codec.json.JsonIndex;
 import cajeta.lang.Slice;
 import cajeta.lang.String;
@@ -11,7 +12,11 @@ import dev.cajeta.http.status.BadRequestException;
  * are found through it, and nothing is materialized until a copying reader
  * is called. Every window is valid for the request only; a value that must
  * outlive it is copied with a `...Copy` reader (§3.5).
+ *
+ * A `Request` component: the binding stage provides it, and the handler
+ * stage injects it.
  */
+@Component(scope = "Request")
 public final class JsonBody {
 
     int8[] store;
