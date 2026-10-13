@@ -1,0 +1,105 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.collection.ArrayList;
+import cajeta.lang.Slice;
+import cajeta.lang.String;
+
+/**
+ * The codecs for one body type, by media type (primavera-web spec §7.1,
+ * §7.5). JSON is always present and first, so it is the default for a
+ * request without `Content-Type` and for an `Accept` of any type; a contributed codec
+ * for `application/json` replaces it. Contributions arrive through the DI
+ * graph: the application injects `@Inject ArrayList<MediaCodec<T>> all;` in
+ * one of its components and hands that list here. The codecs are borrowed,
+ * so the list's owner outlives this registry.
+ */
+public final class Codecs<T> {
+
+    ArrayList<MediaCodec<T>> list;
+
+    /** JSON alone. */
+    public Codecs() {
+        this.list = heap ArrayList<MediaCodec<T>>();
+        this.list.add(#heap JsonCodec<T>());
+        return;
+    }
+
+    /** JSON, then each codec in `extra`, a contribution for `application/json` taking the built-in's place. */
+    public Codecs(ArrayList<MediaCodec<T>> extra) {
+        this.list = heap ArrayList<MediaCodec<T>>();
+        this.list.add(#heap JsonCodec<T>());
+        int32 i = 0;
+        while (i < extra.count()) {
+            this.add(extra.get(i));
+            i = i + 1;
+        }
+        return;
+    }
+
+    /** Adds `codec`, lent, replacing any codec already under its media type. */
+    public Codecs<T> add(^MediaCodec<T> codec) {
+        int32 i = 0;
+        while (i < this.list.count()) {
+            if (this.list.get(i).mediaType().equals(codec.mediaType())) {
+                this.list.set(i, codec);
+                return this;
+            }
+            i = i + 1;
+        }
+        this.list.add(codec);
+        return this;
+    }
+
+    public int32 count() { return this.list.count(); }
+
+    public MediaCodec<T> at(int32 i) { return this.list.get(i); }
+
+    /** The codec for a request's `Content-Type`, JSON when the header is empty, or null when none matches. */
+    public MediaCodec<T> forContentType(Slice<int8> contentType) {
+        if (contentType.count() == (int64) 0) {
+            return this.list.get(0);
+        }
+        int32 i = 0;
+        while (i < this.list.count()) {
+            MediaCodec<T> c = this.list.get(i);
+            if (Negotiation.sameType(contentType, c.mediaType())) {
+                return c;
+            }
+            i = i + 1;
+        }
+        return null;
+    }
+
+    /** The codec `accept` prefers: the highest quality above 0, ties to the earlier codec; null when none is acceptable. */
+    public MediaCodec<T> forAccept(Slice<int8> accept) {
+        int32 best = -1;
+        int32 bestQ = 0;
+        int32 i = 0;
+        while (i < this.list.count()) {
+            int32 q = Negotiation.quality(accept, this.list.get(i).mediaType());
+            if (q > bestQ) {
+                best = i;
+                bestQ = q;
+            }
+            i = i + 1;
+        }
+        if (best < 0) {
+            return null;
+        }
+        return this.list.get(best);
+    }
+
+    /** The media types held, comma-separated, for a 415 or 406 body. */
+    public #String supported() {
+        String out = "";
+        int32 i = 0;
+        while (i < this.list.count()) {
+            if (i > 0) {
+                out = out + ", ";
+            }
+            out = out + this.list.get(i).mediaType();
+            i = i + 1;
+        }
+        return #out;
+    }
+}

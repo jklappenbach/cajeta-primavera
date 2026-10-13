@@ -65,6 +65,17 @@ public final class Endpoints {
         return this;
     }
 
+    /**
+     * An endpoint whose body codec is negotiated (spec §7.1): `handler` is
+     * usually a {@link CodecEndpoint}, which the server owns from here.
+     */
+    public Endpoints codec(String method, String pattern, #CodedHandler handler) {
+        Endpoint e = heap Endpoint(BodyMode.CODEC());
+        e.coded #= handler;
+        this.add(method, pattern, #e);
+        return this;
+    }
+
     /** How many endpoints are registered. */
     public int32 count() { return this.list.count(); }
 

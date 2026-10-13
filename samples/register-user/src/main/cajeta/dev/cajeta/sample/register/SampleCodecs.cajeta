@@ -1,0 +1,33 @@
+package dev.cajeta.sample.register;
+
+import cajeta.collection.ArrayList;
+import dev.cajeta.primavera.web.Codecs;
+import dev.cajeta.primavera.web.MediaCodec;
+
+/**
+ * The codecs the build compiled in, collected by the DI graph (spec §7.5):
+ * every `MediaCodec<Signup>` and `MediaCodec<Account>` component. JSON is
+ * primavera's own and always present.
+ */
+@Component
+public final class SampleCodecs {
+
+    @Inject ArrayList<MediaCodec<Signup>> signups;
+    @Inject ArrayList<MediaCodec<Account>> accounts;
+
+    public SampleCodecs() {
+        return;
+    }
+
+    /** The request codecs for `POST /users`. */
+    public static #Codecs<Signup> requests() {
+        SampleCodecs c = SampleCodecs.__cajeta_inject();
+        return heap Codecs<Signup>(c.signups);
+    }
+
+    /** The response codecs for `POST /users`. */
+    public static #Codecs<Account> responses() {
+        SampleCodecs c = SampleCodecs.__cajeta_inject();
+        return heap Codecs<Account>(c.accounts);
+    }
+}

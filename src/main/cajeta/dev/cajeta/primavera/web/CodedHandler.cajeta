@@ -1,0 +1,9 @@
+package dev.cajeta.primavera.web;
+
+import dev.cajeta.primavera.pipeline.Buffer;
+import dev.cajeta.primavera.pipeline.RequestContext;
+
+/** An endpoint that negotiates its body's codec; {@link CodecEndpoint} is the one implementation. */
+public interface CodedHandler {
+    void handle(RequestView q, Buffer body, Response r, RequestContext ctx);
+}

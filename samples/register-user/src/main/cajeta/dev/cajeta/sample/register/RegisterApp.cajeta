@@ -9,8 +9,11 @@ import dev.cajeta.cloud.identity.UserPool;
 import dev.cajeta.primavera.identity.MemoryUserDirectory;
 import dev.cajeta.primavera.identity.UserDirectory;
 import dev.cajeta.primavera.identity.UserRecord;
+import dev.cajeta.primavera.web.CodecEndpoint;
+import dev.cajeta.primavera.web.Codecs;
 import dev.cajeta.primavera.web.Endpoints;
 import dev.cajeta.primavera.web.JsonBody;
+import dev.cajeta.primavera.web.Reply;
 import dev.cajeta.primavera.web.RequestView;
 import dev.cajeta.primavera.web.Response;
 import dev.cajeta.primavera.web.WebServer;
@@ -21,6 +24,9 @@ import dev.cajeta.primavera.web.WebServerBuilder;
  * confirm a user over HTTP against the identity port's memory driver. The
  * application mints its own user id and keeps the provider's subject as a
  * link (§5.7). Every value a handler keeps is copied out of the request.
+ * `POST /users` reads JSON or protobuf by `Content-Type` and answers in the
+ * type `Accept` prefers (§7.7); the codecs are the components the build
+ * compiled in ({@link SampleCodecs}).
  */
 public final class RegisterApp {
 
@@ -47,7 +53,10 @@ public final class RegisterApp {
 
     /** Registers the sample's endpoints over `pool` and `dir` on `api`; registrations go to `events`. */
     public static void routes(Endpoints api, UserPool pool, UserDirectory dir, Events events) {
-        api.json("POST", "/users", (RequestView q, JsonBody b, Response r) -> RegisterApp.register(pool, dir, events, b, r));
+        Codecs<Signup> in #= SampleCodecs.requests();
+        Codecs<Account> out #= SampleCodecs.responses();
+        api.codec("POST", "/users", heap CodecEndpoint<Signup, Account>(#in, #out,
+            (RequestView q, Signup s, Reply<Account> r) -> RegisterApp.register(pool, dir, events, s, r)));
         api.route("GET", "/users/{id}", (RequestView q, Response r) -> RegisterApp.lookup(pool, dir, q, r));
         api.json("POST", "/users/{id}/confirm",
             (RequestView q, JsonBody b, Response r) -> RegisterApp.confirm(pool, dir, q, b, r));
@@ -66,17 +75,17 @@ public final class RegisterApp {
     }
 
     /** `POST /users`: 201 with the new id, 400 naming a bad field, 409 for a taken username. */
-    public static void register(UserPool pool, UserDirectory dir, Events events, JsonBody b, Response r) {
-        if (!b.isString("username")) {
+    public static void register(UserPool pool, UserDirectory dir, Events events, Signup b, Reply<Account> r) {
+        if (b.username == null) {
             r.error(400, "username is required");
             return;
         }
-        if (!b.isString("password")) {
+        if (b.password == null) {
             r.error(400, "password is required");
             return;
         }
-        String username #= b.stringCopy("username");
-        String password #= b.stringCopy("password");
+        String username = b.username;
+        String password = b.password;
         if (username.byteLength() < 3 || username.byteLength() > 64) {
             r.error(400, "username must be 3 to 64 bytes");
             return;
@@ -92,8 +101,11 @@ public final class RegisterApp {
         }
         String subject #= reg.subject();
         UserRecord rec #= dir.create(username, RegisterApp.PROVIDER(), subject);
-        r.json(201).field("id", rec.id()).field("username", rec.username())
-            .fieldBool("confirmed", reg.confirmed()).end();
+        Account a = heap Account();
+        a.id = rec.id();
+        a.username = rec.username();
+        a.confirmed = reg.confirmed();
+        r.send(201, a);
         events.registered(username);
         return;
     }
@@ -138,18 +150,29 @@ public final class RegisterApp {
         return;
     }
 
-    /** Serves the sample on `addr` until the process ends. */
-    public static int32 main(String[] args) {
-        RegisterApp app = heap RegisterApp();
+    /**
+     * The sample's server on `addr` over `app`: its endpoints, `/events`,
+     * and every body content-coded when the client accepts a coding, so
+     * each pairing is visible on its small responses.
+     */
+    public static #WebServer server(String addr, RegisterApp app) {
         Endpoints api = heap Endpoints();
         RegisterApp.routes(api, app.users(), app.records(), app.events());
-        String addr = args.count() > 0 ? args[0] : "127.0.0.1:8080";
         WebServerBuilder b #= WebServer.builder();
         b.bind(addr);
+        b.compressAbove(0);
         b.endpoints(#api);
         b.websockets(Events.sockets());
         WebServer web #= b.build();
         app.events().attach(web.connections());
+        return #web;
+    }
+
+    /** Serves the sample on `addr` until the process ends. */
+    public static int32 main(String[] args) {
+        RegisterApp app = heap RegisterApp();
+        String addr = args.count() > 0 ? args[0] : "127.0.0.1:8080";
+        WebServer web #= RegisterApp.server(addr, app);
         System.stdout.println("register-user listening on " + addr);
         web.serve();
         return 0;

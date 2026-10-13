@@ -1,0 +1,80 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.lang.String;
+import dev.cajeta.primavera.web.MediaCodec;
+
+/**
+ * A test codec that bounds its output, `username:password` as bytes: its
+ * `encodeInto` writes straight into the caller's buffer (plan 5.1.5).
+ */
+public final class PairCodec implements MediaCodec<Signup> {
+
+    public PairCodec() {
+        return;
+    }
+
+    public String mediaType() { return "text/x-pair"; }
+
+    public int32 sizeBound(Signup value) {
+        return value.username.byteLength() + 1 + value.password.byteLength();
+    }
+
+    public int32 encodeInto(Signup value, int8[] dst, int32 off) {
+        int32 at = off;
+        int32 i = 0;
+        while (i < value.username.byteLength()) {
+            dst[at] = value.username.byteAt(i);
+            at = at + 1;
+            i = i + 1;
+        }
+        dst[at] = (int8) 58;
+        at = at + 1;
+        i = 0;
+        while (i < value.password.byteLength()) {
+            dst[at] = value.password.byteAt(i);
+            at = at + 1;
+            i = i + 1;
+        }
+        return at - off;
+    }
+
+    public #int8[] encode(Signup value) {
+        int8[] out = heap int8[this.sizeBound(value)];
+        this.encodeInto(value, out, 0);
+        return #out;
+    }
+
+    public #Signup decode(int8[] bytes) {
+        return this.decodeRange(bytes, 0, (int32) bytes.count());
+    }
+
+    public #Signup decodeRange(int8[] store, int32 off, int32 len) {
+        int32 colon = -1;
+        int32 i = 0;
+        while (i < len && colon < 0) {
+            if (store[off + i] == (int8) 58) {
+                colon = i;
+            }
+            i = i + 1;
+        }
+        if (colon < 0) {
+            return null;
+        }
+        int8[] u = heap int8[colon];
+        int8[] p = heap int8[len - colon - 1];
+        i = 0;
+        while (i < colon) {
+            u[i] = store[off + i];
+            i = i + 1;
+        }
+        i = 0;
+        while (i < len - colon - 1) {
+            p[i] = store[off + colon + 1 + i];
+            i = i + 1;
+        }
+        Signup s = heap Signup();
+        s.username = heap String(#u, colon);
+        s.password = heap String(#p, len - colon - 1);
+        return #s;
+    }
+}

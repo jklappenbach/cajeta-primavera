@@ -34,6 +34,8 @@ public final class HandlerStage implements Stage {
         } else if (e.mode == BodyMode.NONE()) {
             (RequestView, Response) -> void h = e.plain;
             h(q, r);
+        } else if (e.mode == BodyMode.CODEC()) {
+            e.coded.handle(q, buffer, r, ctx);
         } else if (e.mode == BodyMode.OWNED()) {
             e.owned.handle(q, buffer.window(), r);
         } else {

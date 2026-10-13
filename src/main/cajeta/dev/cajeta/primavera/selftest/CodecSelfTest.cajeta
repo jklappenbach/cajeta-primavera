@@ -1,0 +1,286 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.io.net.SocketAddress;
+import cajeta.io.net.TcpStream;
+import cajeta.lang.Slice;
+import cajeta.lang.String;
+import cajeta.time.Duration;
+import dev.cajeta.http.Bytes;
+import dev.cajeta.http.ClientRequest;
+import dev.cajeta.http.ClientResponse;
+import dev.cajeta.http.client.HttpClient;
+import dev.cajeta.http.coding.ContentCodings;
+import dev.cajeta.primavera.web.CodecEndpoint;
+import dev.cajeta.primavera.web.Codecs;
+import dev.cajeta.primavera.web.Endpoints;
+import dev.cajeta.primavera.web.MediaCodec;
+import dev.cajeta.primavera.web.Negotiation;
+import dev.cajeta.primavera.web.Reply;
+import dev.cajeta.primavera.web.RequestView;
+import dev.cajeta.primavera.web.WebServer;
+import dev.cajeta.primavera.web.WebServerBuilder;
+import dev.cajeta.unit.TestRunner;
+
+/**
+ * primavera-web plan 5.1: codecs chosen by `Content-Type` and `Accept`,
+ * 415 and 406 naming what is supported, gzip both ways, a coding only the
+ * test profile compiles in, and a bounded codec encoding into the pipeline's
+ * pooled buffer with no array of its own.
+ */
+public final class CodecSelfTest {
+
+    // Bytes allocated across the last `send`.
+    static int64 sendBytes;
+
+    static void echo(RequestView q, Signup s, Reply<Signup> r) {
+        int64 before = Cajeta.allocatedBytes();
+        r.send(201, s);
+        CodecSelfTest.sendBytes = Cajeta.allocatedBytes() - before;
+        return;
+    }
+
+    static void addNegotiationTests(TestRunner t) {
+        t.test("Accept qualities: the most specific entry decides, an absent header takes anything", () -> {
+            String a = "text/*;q=0.3, application/json;q=0.8, */*;q=0.1";
+            int8[] ab #= a.toBytes();
+            Slice<int8> accept = ab[0:ab.count()];
+            SelfTest.req(Negotiation.quality(accept, "application/json") == 800, "an exact entry");
+            SelfTest.req(Negotiation.quality(accept, "text/x-pair") == 300, "a major range");
+            SelfTest.req(Negotiation.quality(accept, "image/png") == 100, "the wildcard");
+            int8[] none = heap int8[0];
+            SelfTest.req(Negotiation.quality(none[0:0], "image/png") == 1000, "no header accepts anything");
+            String b = "application/json;q=0";
+            int8[] bb #= b.toBytes();
+            SelfTest.req(Negotiation.quality(bb[0:bb.count()], "application/json") == 0, "q=0 refuses");
+        });
+
+        t.test("identity is refused only by q=0 on it, or on * without it", () -> {
+            String a = "gzip, identity;q=0";
+            int8[] ab #= a.toBytes();
+            SelfTest.req(Negotiation.refusesIdentity(ab[0:ab.count()]), "identity;q=0");
+            String b = "*;q=0, identity";
+            int8[] bb #= b.toBytes();
+            SelfTest.req(!Negotiation.refusesIdentity(bb[0:bb.count()]), "identity listed beats *;q=0");
+            String c = "*;q=0";
+            int8[] cb #= c.toBytes();
+            SelfTest.req(Negotiation.refusesIdentity(cb[0:cb.count()]), "*;q=0 alone");
+        });
+
+        t.test("Codecs: JSON first and default, a contributed type found by Content-Type and Accept", () -> {
+            Codecs<Signup> codecs = heap Codecs<Signup>();
+            PairCodec pair = heap PairCodec();
+            codecs.add(pair);
+            SelfTest.req(codecs.count() == 2, "JSON and the pair codec");
+            int8[] none = heap int8[0];
+            SelfTest.req(codecs.forContentType(none[0:0]).mediaType().equals("application/json"), "no Content-Type is JSON");
+            String ct = "Text/X-Pair; charset=utf-8";
+            int8[] ctb #= ct.toBytes();
+            SelfTest.req(codecs.forContentType(ctb[0:ctb.count()]).mediaType().equals("text/x-pair"), "parameters and case are ignored");
+            String xml = "application/xml";
+            int8[] xb #= xml.toBytes();
+            SelfTest.req(codecs.forContentType(xb[0:xb.count()]) == null, "an unknown type is null");
+            SelfTest.req(codecs.forAccept(xb[0:xb.count()]) == null, "an unmet Accept is null");
+            String any = "*/*";
+            int8[] anyb #= any.toBytes();
+            SelfTest.req(codecs.forAccept(anyb[0:anyb.count()]).mediaType().equals("application/json"), "*/* is JSON");
+            String pref = "application/json;q=0.5, text/x-pair";
+            int8[] pb #= pref.toBytes();
+            SelfTest.req(codecs.forAccept(pb[0:pb.count()]).mediaType().equals("text/x-pair"), "the higher quality wins");
+            String sup #= codecs.supported();
+            SelfTest.req(sup.equals("application/json, text/x-pair"), "supported lists both: " + sup);
+        });
+    }
+
+    static async int32 serve(WebServer web) {
+        web.serve();
+        return 1;
+    }
+
+    // One request over a fresh socket, `Connection: close`; the whole response as bytes.
+    static #String raw(int32 port, String head, int8[] body, int32 bodyLen) {
+        TcpStream sock #= TcpStream.connectAsync(SocketAddress.parse("127.0.0.1:" + port));
+        String req = head + "Host: t\r\nConnection: close\r\nContent-Length: " + bodyLen + "\r\n\r\n";
+        int8[] hb #= req.toBytes();
+        sock.writeAllAsync(hb, (int64) 0, (int64) req.byteLength());
+        if (bodyLen > 0) {
+            sock.writeAllAsync(body, (int64) 0, (int64) bodyLen);
+        }
+        int8[] buf = heap int8[16384];
+        int32 n = 0;
+        int64 got = sock.readAsync(buf, (int64) 0, (int64) 16384);
+        while (got > (int64) 0) {
+            n = n + (int32) got;
+            got = sock.readAsync(buf, (int64) n, (int64) (16384 - n));
+        }
+        sock.close();
+        return Bytes.toString(buf[0:n]);
+    }
+
+    // The body after the head of a raw response.
+    static #String bodyOf(String response) {
+        int32 at = response.indexOf("\r\n\r\n");
+        if (at < 0) {
+            return "";
+        }
+        return response.substring(at + 4, response.byteLength());
+    }
+
+    static void fail(int32[] failures, String what) {
+        System.stdout.println("  " + what);
+        failures[0] = failures[0] + 1;
+        return;
+    }
+
+    static async int32 drive(int32 port) {
+        String base = "http://127.0.0.1:" + port;
+        HttpClient client = heap HttpClient();
+        ClientResponse resp = heap ClientResponse();
+        int32[] failures = heap int32[1];
+        String json = "{\"username\":\"ada\",\"password\":\"correct horse\"}";
+
+        // By Content-Type, answered by Accept.
+        ClientRequest a #= ClientRequest.post(base + "/echo");
+        a.setHeader("Content-Type", "text/x-pair");
+        a.setHeader("Accept", "application/json");
+        a.body("ada:correct horse");
+        client.send(a, resp);
+        String viaPair #= resp.bodyString();
+        if (resp.status() != 201 || viaPair.indexOf("\"username\":\"ada\"") < 0) {
+            CodecSelfTest.fail(failures, "a pair body answered as JSON: " + resp.status() + " " + viaPair);
+        }
+        ClientRequest b #= ClientRequest.post(base + "/echo");
+        b.setHeader("Content-Type", "application/json");
+        b.setHeader("Accept", "text/x-pair");
+        b.body(json);
+        client.send(b, resp);
+        String viaJson #= resp.bodyString();
+        if (resp.status() != 201 || !viaJson.equals("ada:correct horse")) {
+            CodecSelfTest.fail(failures, "a JSON body answered as a pair: " + resp.status() + " " + viaJson);
+        }
+
+        // 415 and 406 name the supported types.
+        ClientRequest c #= ClientRequest.post(base + "/echo");
+        c.setHeader("Content-Type", "application/xml");
+        c.body("<a/>");
+        client.send(c, resp);
+        String unsupported #= resp.bodyString();
+        if (resp.status() != 415 || unsupported.indexOf("text/x-pair") < 0) {
+            CodecSelfTest.fail(failures, "an unknown Content-Type answered " + resp.status() + " " + unsupported);
+        }
+        ClientRequest d #= ClientRequest.post(base + "/echo");
+        d.setHeader("Content-Type", "application/json");
+        d.setHeader("Accept", "application/xml");
+        d.body(json);
+        client.send(d, resp);
+        String unacceptable #= resp.bodyString();
+        if (resp.status() != 406 || unacceptable.indexOf("application/json") < 0) {
+            CodecSelfTest.fail(failures, "an unmet Accept answered " + resp.status() + " " + unacceptable);
+        }
+        ClientRequest e #= ClientRequest.post(base + "/echo");
+        e.setHeader("Content-Type", "application/json");
+        e.body("not json");
+        client.send(e, resp);
+        if (resp.status() != 400) {
+            CodecSelfTest.fail(failures, "a malformed JSON body answered " + resp.status());
+        }
+
+        // 5.1.5: the bounded codec's send allocates nothing once the pool is warm.
+        int32 i = 0;
+        int64 worst = (int64) 0;
+        while (i < 20) {
+            ClientRequest w #= ClientRequest.post(base + "/echo");
+            w.setHeader("Content-Type", "application/json");
+            w.setHeader("Accept", "text/x-pair");
+            w.body(json);
+            client.send(w, resp);
+            if (i >= 4 && CodecSelfTest.sendBytes > worst) {
+                worst = CodecSelfTest.sendBytes;
+            }
+            i = i + 1;
+        }
+        if (worst != (int64) 0) {
+            CodecSelfTest.fail(failures, "a bounded codec's send allocated " + worst + " bytes");
+        }
+        ClientRequest jw #= ClientRequest.post(base + "/echo");
+        jw.setHeader("Content-Type", "application/json");
+        jw.body(json);
+        client.send(jw, resp);
+        if (CodecSelfTest.sendBytes <= (int64) 0) {
+            CodecSelfTest.fail(failures, "the JSON send's allocation was not seen, so the zero above proves nothing");
+        }
+
+        // gzip both ways: a coded request body, and a coded response read off the wire.
+        int8[] plain #= json.toBytes();
+        int8[] gz #= ContentCodings.compressor("gzip").compress(plain, plain.count(), 1);
+        ClientRequest g #= ClientRequest.post(base + "/echo");
+        g.setHeader("Content-Type", "application/json");
+        g.setHeader("Content-Encoding", "gzip");
+        g.setHeader("Accept", "text/x-pair");
+        g.body(gz, gz.count());
+        client.send(g, resp);
+        String unzipped #= resp.bodyString();
+        if (resp.status() != 201 || !unzipped.equals("ada:correct horse")) {
+            CodecSelfTest.fail(failures, "a gzip body answered " + resp.status() + " " + unzipped);
+        }
+        String coded #= CodecSelfTest.raw(port, "POST /echo HTTP/1.1\r\nContent-Type: application/json\r\nAccept-Encoding: gzip\r\n", plain, plain.count());
+        if (coded.indexOf("Content-Encoding: gzip") < 0 && coded.indexOf("content-encoding: gzip") < 0) {
+            CodecSelfTest.fail(failures, "an accepted gzip response was not coded: " + coded);
+        }
+
+        // 415 for a coding the registry lacks, 406 when every coding is refused.
+        String br #= CodecSelfTest.raw(port, "POST /echo HTTP/1.1\r\nContent-Type: application/json\r\nContent-Encoding: br\r\n", plain, plain.count());
+        if (br.indexOf(" 415 ") < 0 || (br.indexOf("Accept-Encoding: ") < 0 && br.indexOf("accept-encoding: ") < 0)) {
+            CodecSelfTest.fail(failures, "an unknown Content-Encoding answered " + br);
+        }
+        String none #= CodecSelfTest.raw(port, "POST /echo HTTP/1.1\r\nContent-Type: application/json\r\nAccept-Encoding: br, identity;q=0\r\n", plain, plain.count());
+        if (none.indexOf(" 406 ") < 0) {
+            CodecSelfTest.fail(failures, "a refused identity with no held coding answered " + none);
+        }
+
+        // 11.6: the test profile's x-reverse coding, both ways.
+        int8[] rev = heap int8[plain.count()];
+        int32 k = 0;
+        while (k < plain.count()) {
+            rev[k] = plain[plain.count() - 1 - k];
+            k = k + 1;
+        }
+        String reversed #= CodecSelfTest.raw(port, "POST /echo HTTP/1.1\r\nContent-Type: application/json\r\nContent-Encoding: x-reverse\r\nAccept: text/x-pair\r\nAccept-Encoding: x-reverse\r\n", rev, rev.count());
+        String rbody #= CodecSelfTest.bodyOf(reversed);
+        if (reversed.indexOf(" 201 ") < 0 || !rbody.equals("esroh tcerroc:ada")) {
+            CodecSelfTest.fail(failures, "the test-only coding answered " + reversed);
+        }
+        return failures[0];
+    }
+
+    static void addServerTests(TestRunner t) {
+        t.test("codecs and codings over a live server (5.1.1 to 5.1.5)", () -> {
+            scope {
+                PairCodec pair = heap PairCodec();
+                Codecs<Signup> in = heap Codecs<Signup>();
+                Codecs<Signup> out = heap Codecs<Signup>();
+                in.add(pair);
+                out.add(pair);
+                Endpoints api = heap Endpoints();
+                api.codec("POST", "/echo", heap CodecEndpoint<Signup, Signup>(in, out,
+                    (RequestView q, Signup s, Reply<Signup> r) -> CodecSelfTest.echo(q, s, r)));
+                WebServerBuilder b #= WebServer.builder();
+                b.bind("127.0.0.1:0");
+                b.compressAbove(0);
+                b.endpoints(#api);
+                WebServer web #= b.build();
+                int32 port = web.port();
+                Task<int32> sv = spawn serve(web);
+                Task<int32> td = spawn drive(port);
+                int32 failures = await td;
+                web.shutdown(Duration.ofSeconds(2));
+                await sv;
+                SelfTest.req(failures == 0, "every codec check held (see the lines above)");
+            }
+        });
+    }
+
+    static void add(TestRunner t) {
+        CodecSelfTest.addNegotiationTests(t);
+        CodecSelfTest.addServerTests(t);
+    }
+}

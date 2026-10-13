@@ -323,6 +323,7 @@ public class SelfTest {
         PipelineSelfTest.add(t);
         WebSelfTest.add(t);
         WsSelfTest.add(t);
+        CodecSelfTest.add(t);
         IdentitySelfTest.add(t);
 
         return t.summary();

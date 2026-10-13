@@ -1,0 +1,56 @@
+package dev.cajeta.sample.register;
+
+import cajeta.lang.String;
+import cajeta.wire.CompressStream;
+import cajeta.wire.Compressor;
+import cajeta.wire.Decompressor;
+import dev.cajeta.primavera.web.ContentCodingProvider;
+
+/**
+ * A coding only the test profile compiles in, `x-reverse`, which reverses
+ * the bytes. Its presence is all it takes: primavera and `cajeta-http` are
+ * unchanged (primavera-web spec §11.6).
+ */
+@Component
+@Profile("test")
+public final class ReverseCoding implements ContentCodingProvider {
+
+    public ReverseCoding() {
+        return;
+    }
+
+    public String token() { return "x-reverse"; }
+
+    public #Compressor compressor() { return heap Reverser(); }
+
+    public #Decompressor decompressor() { return heap Reverser(); }
+}
+
+/** Reverses `src[0 .. len)` both ways. */
+final class Reverser implements Compressor, Decompressor {
+
+    Reverser() {
+        return;
+    }
+
+    static #int8[] flip(int8[] src, int64 len) {
+        int32 n = (int32) len;
+        int8[] out = heap int8[n];
+        int32 i = 0;
+        while (i < n) {
+            out[i] = src[n - 1 - i];
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    public #int8[] compress(int8[] src) { return Reverser.flip(src, src.count()); }
+
+    public #int8[] compress(int8[] src, int64 len, int32 level) { return Reverser.flip(src, len); }
+
+    public #CompressStream stream(int32 level) { return null; }
+
+    public #int8[] decompress(int8[] src, int64 expandedLen) { return Reverser.flip(src, src.count()); }
+
+    public #int8[] decompress(int8[] src, int64 len, int64 maxOut) { return Reverser.flip(src, len); }
+}

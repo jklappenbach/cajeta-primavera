@@ -1,0 +1,22 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.lang.String;
+import cajeta.wire.Compressor;
+import cajeta.wire.Decompressor;
+
+/**
+ * A content coding a dependency contributes (primavera-web spec §7.3,
+ * §7.5): declared as a `@Component` implementing this interface, it is
+ * registered with `cajeta-http` when a server is built, and negotiated with
+ * no change to primavera or `cajeta-http`. gzip and deflate are always
+ * present.
+ */
+public interface ContentCodingProvider {
+
+    /** The coding's token, such as `br` or `zstd`. */
+    String token();
+
+    #Compressor compressor();
+
+    #Decompressor decompressor();
+}

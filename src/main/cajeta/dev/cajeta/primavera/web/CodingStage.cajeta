@@ -1,0 +1,158 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.error.RecoverableException;
+import cajeta.lang.Slice;
+import cajeta.lang.String;
+import cajeta.wire.Compressor;
+import cajeta.wire.DecompressionLimitException;
+import cajeta.wire.Decompressor;
+import dev.cajeta.http.Bytes;
+import dev.cajeta.http.HttpRequest;
+import dev.cajeta.http.HttpResponse;
+import dev.cajeta.http.coding.AcceptEncoding;
+import dev.cajeta.http.coding.ContentCodings;
+import dev.cajeta.primavera.pipeline.Buffer;
+import dev.cajeta.primavera.pipeline.Kind;
+import dev.cajeta.primavera.pipeline.RequestContext;
+import dev.cajeta.primavera.pipeline.Stage;
+
+/**
+ * Content codings, RAW to RAW, first in the standard pipeline so its
+ * outbound side runs last (primavera-web spec §7.3, §7.6, §7.18). Inbound
+ * it decodes a coded body into a pooled buffer, answering 415 with
+ * `Accept-Encoding` for a coding the registry does not hold, and 406 when
+ * `Accept-Encoding` refuses every coding it holds, identity included.
+ * Outbound it codes a body of at least `compressAbove` bytes in the coding
+ * `Accept-Encoding` prefers. The registry is `cajeta-http`'s
+ * `ContentCodings`, which {@link ContentCodingProviders} fills from the DI
+ * graph.
+ */
+public final class CodingStage implements Stage {
+
+    int32 above;
+
+    public CodingStage(int32 compressAbove) {
+        this.above = compressAbove;
+        return;
+    }
+
+    public #String name() { String s = "coding"; return #s; }
+    public int32 consumes() { return Kind.RAW(); }
+    public int32 produces() { return Kind.RAW(); }
+
+    static void refuse(RequestContext ctx, int32 code, String message) {
+        Response out = heap Response();
+        out.bind(ctx.response());
+        String supported #= ContentCodings.supported();
+        out.header("Accept-Encoding", supported);
+        out.error(code, message + "; supported: " + supported);
+        ctx.respond(code);
+        return;
+    }
+
+    public Buffer inbound(Buffer buffer, RequestContext ctx) {
+        HttpRequest q = ctx.request();
+        if (q == null) {
+            return #= buffer;
+        }
+        if (Negotiation.refusesIdentity(q.header("Accept-Encoding"))) {
+            String accept #= q.headerString("Accept-Encoding");
+            if (AcceptEncoding.best(accept).equals("identity")) {
+                CodingStage.refuse(ctx, 406, "no acceptable content coding");
+                return #= buffer;
+            }
+        }
+        Slice<int8> ce = Bytes.trim(q.header("Content-Encoding"));
+        if (ce.count() == (int64) 0 || Bytes.equalsIgnoreCase(ce, "identity")) {
+            return #= buffer;
+        }
+        String token #= Bytes.toString(ce).toLowerCase();
+        Decompressor d = ContentCodings.decompressor(token);
+        if (d == null) {
+            CodingStage.refuse(ctx, 415, "unsupported content coding " + token);
+            return #= buffer;
+        }
+        // A decompressor reads from index 0, so the coded bytes move to the
+        // start of a pooled buffer first.
+        Buffer coded = ctx.take();
+        int8[] src = coded.store();
+        int8[] from = buffer.store();
+        int32 at = buffer.offset();
+        int32 n = buffer.length();
+        int32 i = 0;
+        while (i < n) {
+            src[i] = from[at + i];
+            i = i + 1;
+        }
+        int8[] plain = null;
+        int32 status = 0;
+        try {
+            plain #= d.decompress(src, (int64) n, (int64) ctx.bufferSize());
+        } catch (DecompressionLimitException e) {
+            status = 413;
+        } catch (RecoverableException e) {
+            status = 400;
+        }
+        ctx.release(coded);
+        if (status != 0) {
+            CodingStage.refuse(ctx, status, "the " + token + " body could not be decoded");
+            return #= buffer;
+        }
+        Buffer decoded = ctx.take();
+        decoded.bytes().write(plain, 0, plain.count());
+        return #= decoded;
+    }
+
+    // Already-compressed families gain nothing from a second coding.
+    static boolean codable(Slice<int8> contentType) {
+        return !(Bytes.startsWith(contentType, "image/") || Bytes.startsWith(contentType, "video/")
+            || Bytes.startsWith(contentType, "audio/") || Bytes.containsIgnoreCase(contentType, "zip")
+            || Bytes.containsIgnoreCase(contentType, "compressed"));
+    }
+
+    static void addVary(HttpResponse r) {
+        if (!r.hasHeader("Vary")) {
+            r.setHeader("Vary", "Accept-Encoding");
+            return;
+        }
+        if (Bytes.containsIgnoreCase(r.header("Vary"), "accept-encoding")) {
+            return;
+        }
+        String merged #= Bytes.toString(r.header("Vary")) + ", Accept-Encoding";
+        r.setHeader("Vary", merged);
+        return;
+    }
+
+    public Buffer outbound(Buffer buffer, RequestContext ctx) {
+        HttpRequest q = ctx.request();
+        HttpResponse r = ctx.response();
+        if (q == null || r == null || r.bodyStream() != null) {
+            return #= buffer;
+        }
+        int32 n = r.bodyLength();
+        if (n == 0 || n < this.above || r.hasHeader("Content-Encoding") || !CodingStage.codable(r.header("Content-Type"))) {
+            return #= buffer;
+        }
+        CodingStage.addVary(r);
+        String accept #= q.hasHeader("Accept-Encoding") ? q.headerString("Accept-Encoding") : null;
+        String coding = AcceptEncoding.best(accept);
+        if (coding.equals("identity")) {
+            return #= buffer;
+        }
+        Compressor c = ContentCodings.compressor(coding);
+        Buffer plain = ctx.take();
+        int8[] src = plain.store();
+        Slice<int8> body = r.body();
+        int32 i = 0;
+        while (i < n) {
+            src[i] = body[i];
+            i = i + 1;
+        }
+        int8[] out #= c.compress(src, (int64) n, 1);
+        ctx.release(plain);
+        r.body(out, out.count());
+        r.setHeader("Content-Encoding", coding);
+        r.removeHeader("Content-Length");
+        return #= buffer;
+    }
+}

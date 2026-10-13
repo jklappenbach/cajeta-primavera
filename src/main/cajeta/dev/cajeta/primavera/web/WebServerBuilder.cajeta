@@ -11,11 +11,16 @@ import dev.cajeta.primavera.pipeline.BufferSource;
 import dev.cajeta.primavera.pipeline.Pipeline;
 import dev.cajeta.primavera.pipeline.Stage;
 
-/** Collects a web server's address, endpoints, leading stages and buffer size (64 KiB unless set). */
+/**
+ * Collects a web server's address, endpoints, leading stages, buffer size
+ * (64 KiB unless set) and coding threshold. Building it registers every
+ * {@link ContentCodingProvider} compiled into the program.
+ */
 public final class WebServerBuilder {
 
     String addr;
     int32 bytes;
+    int32 codeAbove;
     Endpoints api;
     WebSocketEndpoints sockets;
     ArrayList<Stage> leading;
@@ -23,6 +28,7 @@ public final class WebServerBuilder {
     public WebServerBuilder() {
         this.addr = "127.0.0.1:0";
         this.bytes = 65536;
+        this.codeAbove = 256;
         this.api = null;
         this.sockets = null;
         this.leading = heap ArrayList<Stage>();
@@ -37,6 +43,15 @@ public final class WebServerBuilder {
     /** The size of every connection and pipeline buffer (spec §10.2). */
     public WebServerBuilder bufferBytes(int32 n) {
         this.bytes = n;
+        return this;
+    }
+
+    /**
+     * Responses of at least `n` bytes are content-coded when the client
+     * accepts a coding (spec §7.3); 256 unless set, 0 codes every body.
+     */
+    public WebServerBuilder compressAbove(int32 n) {
+        this.codeAbove = n;
         return this;
     }
 
@@ -76,7 +91,8 @@ public final class WebServerBuilder {
             Stage s #= this.leading.removeAt(0);
             p.add(#s);
         }
-        HttpPipeline.addStandard(p, ws.endpoints);
+        ContentCodingProviders.install();
+        HttpPipeline.addStandard(p, ws.endpoints, this.codeAbove);
         p.build();
         ws.pipeline #= p;
         Dispatch d = heap Dispatch(ws.pipeline, ws.source);

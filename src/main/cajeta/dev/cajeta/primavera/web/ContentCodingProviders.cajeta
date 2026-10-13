@@ -1,0 +1,30 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.collection.ArrayList;
+import dev.cajeta.http.coding.ContentCodings;
+
+/**
+ * Every {@link ContentCodingProvider} compiled into the program, collected
+ * by the DI graph (spec §7.5: there is no runtime registration call).
+ */
+@Component
+public final class ContentCodingProviders {
+
+    @Inject ArrayList<ContentCodingProvider> all;
+
+    public ContentCodingProviders() {
+        return;
+    }
+
+    /** Registers each contributed coding with `cajeta-http`; returns how many. Repeating it is harmless. */
+    public static int32 install() {
+        ContentCodingProviders p = ContentCodingProviders.__cajeta_inject();
+        int32 i = 0;
+        while (i < p.all.count()) {
+            ContentCodingProvider c = p.all.get(i);
+            ContentCodings.register(c.token(), #c.compressor(), #c.decompressor());
+            i = i + 1;
+        }
+        return p.all.count();
+    }
+}

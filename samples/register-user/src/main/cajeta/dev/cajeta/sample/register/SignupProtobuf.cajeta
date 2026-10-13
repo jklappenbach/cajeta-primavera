@@ -1,0 +1,53 @@
+package dev.cajeta.sample.register;
+
+import cajeta.lang.String;
+import dev.cajeta.codec.protobuf.Protobuf;
+import dev.cajeta.primavera.web.MediaCodec;
+
+/**
+ * `Signup` as `application/x-protobuf`, over `cajeta-codec`'s synthesized
+ * `Protobuf.parse` and `toBytes`. A component, so the DI graph contributes
+ * it to every `ArrayList<MediaCodec<Signup>>` (spec §7.2, §7.5).
+ */
+@Component
+public final class SignupProtobuf implements MediaCodec<Signup> {
+
+    public SignupProtobuf() {
+        return;
+    }
+
+    public String mediaType() { return "application/x-protobuf"; }
+
+    public #int8[] encode(Signup value) {
+        int8[] bytes #= Protobuf.toBytes<Signup>(value);
+        return #bytes;
+    }
+
+    public #Signup decode(int8[] bytes) {
+        Signup v #= Protobuf.parse<Signup>(bytes, bytes.count());
+        return #v;
+    }
+
+    public #Signup decodeRange(int8[] store, int32 off, int32 len) {
+        int8[] copy = heap int8[len];
+        int32 i = 0;
+        while (i < len) {
+            copy[i] = store[off + i];
+            i = i + 1;
+        }
+        Signup v #= Protobuf.parse<Signup>(copy, (int64) len);
+        return #v;
+    }
+
+    public int32 encodeInto(Signup value, int8[] dst, int32 off) {
+        int8[] bytes #= Protobuf.toBytes<Signup>(value);
+        int32 i = 0;
+        while (i < bytes.count()) {
+            dst[off + i] = bytes[i];
+            i = i + 1;
+        }
+        return (int32) bytes.count();
+    }
+
+    public int32 sizeBound(Signup value) { return -1; }
+}

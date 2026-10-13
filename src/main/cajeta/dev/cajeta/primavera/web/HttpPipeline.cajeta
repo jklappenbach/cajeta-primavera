@@ -5,13 +5,20 @@ import dev.cajeta.primavera.pipeline.Pipeline;
 
 /**
  * The standard HTTP pipeline (primavera-web spec §7.18) as far as this phase
- * builds it: routing, binding, handler. Content coding joins with the codec
- * phase and authentication with the security phase.
+ * builds it: content coding, routing, binding, handler. Authentication
+ * joins with the security phase.
  */
 public final class HttpPipeline {
 
-    /** Appends the standard stages over `endpoints` to `p`, which may already hold earlier stages. */
+    /** Appends the standard stages over `endpoints` to `p`, coding bodies of 256 bytes or more. */
     public static void addStandard(Pipeline p, Endpoints endpoints) {
+        HttpPipeline.addStandard(p, endpoints, 256);
+        return;
+    }
+
+    /** Appends the standard stages over `endpoints` to `p`, which may already hold earlier stages. */
+    public static void addStandard(Pipeline p, Endpoints endpoints, int32 compressAbove) {
+        p.add(heap CodingStage(compressAbove));
         p.add(heap RoutingStage(endpoints));
         p.add(heap BindingStage(endpoints));
         p.add(heap HandlerStage(endpoints));

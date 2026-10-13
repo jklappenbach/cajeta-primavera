@@ -1,0 +1,50 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.codec.json.Json;
+import cajeta.lang.String;
+
+/**
+ * The JSON codec every {@link Codecs} holds (spec §7.1). It decodes and
+ * encodes through the stdlib's synthesized `Json.parse<T>` and
+ * `Json.toBytes<T>`, which have no caller-buffer form, so its size bound
+ * is unknown and a response takes the `encode` path.
+ */
+public final class JsonCodec<T> implements MediaCodec<T> {
+
+    public JsonCodec() {
+        return;
+    }
+
+    public String mediaType() { return "application/json"; }
+
+    public #int8[] encode(T value) {
+        int8[] bytes #= Json.toBytes<T>(value);
+        return #bytes;
+    }
+
+    public #T decode(int8[] bytes) {
+        return Json.parse<T>(bytes, bytes.count());
+    }
+
+    public #T decodeRange(int8[] store, int32 off, int32 len) {
+        int8[] copy = heap int8[len];
+        int32 i = 0;
+        while (i < len) {
+            copy[i] = store[off + i];
+            i = i + 1;
+        }
+        return Json.parse<T>(copy, (int64) len);
+    }
+
+    public int32 encodeInto(T value, int8[] dst, int32 off) {
+        int8[] bytes #= Json.toBytes<T>(value);
+        int32 i = 0;
+        while (i < bytes.count()) {
+            dst[off + i] = bytes[i];
+            i = i + 1;
+        }
+        return (int32) bytes.count();
+    }
+
+    public int32 sizeBound(T value) { return -1; }
+}

@@ -96,6 +96,9 @@ public final class RequestContext {
 
     public int32 held() { return this.ledger.count(); }
 
+    /** The size of every buffer {@link #take} hands out. */
+    public int32 bufferSize() { return this.source.bufferSize(); }
+
     /** Return every buffer still held to the source. */
     public void close() {
         while (this.ledger.count() > 0) {

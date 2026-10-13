@@ -11,12 +11,13 @@ Each request runs a pipeline of stages under a fresh request scope:
 
 | Stage | Consumes | Produces | Does |
 |---|---|---|---|
+| coding | raw | raw | decodes a coded body, and on the way out codes the response (see Codecs and codings) |
 | routing | raw | routed | matches an endpoint, binds path parameters, or answers 404, 405 or 413 |
 | binding | routed | bound | indexes a JSON body in place for a JSON endpoint |
 | handler | bound | bound | calls the endpoint with its bound values |
 
-A `WebServerBuilder` held in a local adds stages ahead of these with `stage(...)`. Content coding
-joins with the codec phase and authentication with the security phase. A
+A `WebServerBuilder` held in a local adds stages ahead of these with `stage(...)`.
+Authentication joins with the security phase. A
 stage that throws an `HttpException`, such as one of the
 `dev.cajeta.http.status` catalogue, ends the request with that status and an
 empty body. Anything the handler already wrote is discarded.
@@ -40,6 +41,7 @@ a keep-alive connection leave it unchanged.
 | JSON index | `api.json(...)` | a `JsonBody` over the input buffer | one structural index, no tree |
 | view | `api.window(...)` | the body window, for a `view` to overlay | nothing beyond the view's checks |
 | owned | `api.owned<T>(...)` | a fresh `T` decoded through `Json.parse<T>` | a copy and a decode; the buffer is free afterwards |
+| codec | `api.codec(...)` | a fresh `T` decoded by the codec `Content-Type` names | as owned, in any registered media type |
 
 A view endpoint constructs its view over the window it is handed:
 
@@ -83,6 +85,53 @@ object, `field` and `fieldBool` add members with strings escaped, and `end`
 closes it. `error(status, message)` writes `{"error": message}`, and
 `empty(status)` sends no body.
 
+## Codecs and codings
+
+A codec endpoint reads its body in whichever media type the request names
+and answers in whichever type `Accept` prefers. JSON is always present and
+is the default. Other types come from codecs the build compiles in.
+
+```cajeta
+@Component
+public final class SignupProtobuf implements MediaCodec<Signup> { ... }
+
+@Component
+public final class SampleCodecs {
+    @Inject ArrayList<MediaCodec<Signup>> signups;
+    @Inject ArrayList<MediaCodec<Account>> accounts;
+}
+
+SampleCodecs c = SampleCodecs.__cajeta_inject();
+Codecs<Signup> in = heap Codecs<Signup>(c.signups);
+Codecs<Account> out = heap Codecs<Account>(c.accounts);
+api.codec("POST", "/users", heap CodecEndpoint<Signup, Account>(#in, #out,
+    (RequestView q, Signup s, Reply<Account> r) -> Users.register(s, r)));
+```
+
+- A `MediaCodec<T>` is a `cajeta.wire.Encoder<T>` and `BufferEncoder<T>`
+  with a media type. Declared as a component, it reaches every
+  `ArrayList<MediaCodec<T>>` through the DI graph. There is no registration
+  call. A contributed `application/json` codec replaces the built-in one.
+- `Reply.send(status, value)` encodes in the negotiated type. A codec whose
+  `sizeBound` promises the output fits writes it into a buffer from the
+  pipeline's pool, so the encoding makes no array of its own. `JsonCodec`
+  cannot bound its output and takes the `encode` path.
+- A `Content-Type` no codec reads answers 415, and an `Accept` no codec
+  meets answers 406. Both bodies name the supported types. A body its
+  codec cannot read answers 400. All three happen before the handler runs.
+
+Content codings are `cajeta-http`'s registry: gzip and deflate are always
+there. A dependency adds one by declaring a `ContentCodingProvider`
+component. The server registers every one it finds when it is built.
+
+- A request whose `Content-Encoding` the registry holds is decoded into a
+  pooled buffer before routing. One it does not hold answers 415 with
+  `Accept-Encoding` listing the codings that are held.
+- A response is coded in the coding `Accept-Encoding` prefers, once it is at
+  least `compressAbove` bytes (256 unless the builder sets it; 0 codes every
+  body). Images, audio, video and archives are left alone.
+- An `Accept-Encoding` that refuses identity and names no held coding answers 406.
+
 ## WebSocket
 
 A WebSocket path is a GET route on the HTTP pipeline that upgrades. After the
@@ -120,6 +169,10 @@ web.connections().broadcast("{\"registered\":\"ada\"}");
 `samples/register-user` registers, looks up and confirms users against the
 identity port's memory driver. The application mints its own user id, and
 the `UserDirectory` in `dev.cajeta.primavera.identity` keeps the provider's
-subject as a link. Its `/events` WebSocket path announces each registration
-to every subscriber. `cajeta test` at the repo root runs it after the
-library's own tests.
+subject as a link. `POST /users` takes JSON or protobuf (`cajeta-codec`'s
+`Protobuf`, through two small codecs), answers in the type `Accept` prefers,
+and codes every response the client accepts a coding for. The test profile
+adds an `x-reverse` coding that nothing else knows about, and the self-test
+negotiates it both ways. Its `/events` WebSocket path announces each
+registration to every subscriber. `cajeta test` at the repo root runs it
+after the library's own tests.

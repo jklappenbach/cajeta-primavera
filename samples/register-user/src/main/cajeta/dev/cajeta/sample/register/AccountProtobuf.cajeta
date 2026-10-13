@@ -1,0 +1,53 @@
+package dev.cajeta.sample.register;
+
+import cajeta.lang.String;
+import dev.cajeta.codec.protobuf.Protobuf;
+import dev.cajeta.primavera.web.MediaCodec;
+
+/**
+ * `Account` as `application/x-protobuf`, over `cajeta-codec`'s synthesized
+ * `Protobuf.parse` and `toBytes`. A component, so the DI graph contributes
+ * it to every `ArrayList<MediaCodec<Account>>` (spec §7.2, §7.5).
+ */
+@Component
+public final class AccountProtobuf implements MediaCodec<Account> {
+
+    public AccountProtobuf() {
+        return;
+    }
+
+    public String mediaType() { return "application/x-protobuf"; }
+
+    public #int8[] encode(Account value) {
+        int8[] bytes #= Protobuf.toBytes<Account>(value);
+        return #bytes;
+    }
+
+    public #Account decode(int8[] bytes) {
+        Account v #= Protobuf.parse<Account>(bytes, bytes.count());
+        return #v;
+    }
+
+    public #Account decodeRange(int8[] store, int32 off, int32 len) {
+        int8[] copy = heap int8[len];
+        int32 i = 0;
+        while (i < len) {
+            copy[i] = store[off + i];
+            i = i + 1;
+        }
+        Account v #= Protobuf.parse<Account>(copy, (int64) len);
+        return #v;
+    }
+
+    public int32 encodeInto(Account value, int8[] dst, int32 off) {
+        int8[] bytes #= Protobuf.toBytes<Account>(value);
+        int32 i = 0;
+        while (i < bytes.count()) {
+            dst[off + i] = bytes[i];
+            i = i + 1;
+        }
+        return (int32) bytes.count();
+    }
+
+    public int32 sizeBound(Account value) { return -1; }
+}

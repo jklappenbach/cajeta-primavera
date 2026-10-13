@@ -1,0 +1,61 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.error.RecoverableException;
+import cajeta.lang.String;
+import dev.cajeta.primavera.pipeline.Buffer;
+import dev.cajeta.primavera.pipeline.RequestContext;
+
+/**
+ * An endpoint whose body is a `T` in whichever media type the request
+ * names, answering an `R` in whichever type `Accept` prefers (primavera-web
+ * spec §7.1, §7.6). A `Content-Type` no codec reads answers 415 and an
+ * `Accept` no codec meets answers 406, each naming the supported types,
+ * before the body is decoded; a body its codec cannot read answers 400.
+ * Registered with {@link Endpoints#codec}.
+ *
+ * ```cajeta
+ * api.codec("POST", "/users", heap CodecEndpoint<Signup, Account>(in, out,
+ *     (RequestView q, Signup s, Reply<Account> r) -> App.register(s, r)));
+ * ```
+ */
+public final class CodecEndpoint<T, R> implements CodedHandler {
+
+    Codecs<T> in;
+    Codecs<R> out;
+    (RequestView, T, Reply<R>) -> void handler;
+
+    public CodecEndpoint(Codecs<T> in, Codecs<R> out, (RequestView, T, Reply<R>) -> void handler) {
+        this.in #= in;
+        this.out #= out;
+        this.handler #= handler;
+        return;
+    }
+
+    public void handle(RequestView q, Buffer body, Response r, RequestContext ctx) {
+        MediaCodec<T> dec = this.in.forContentType(q.header("Content-Type"));
+        if (dec == null) {
+            r.error(415, "unsupported media type; supported: " + this.in.supported());
+            return;
+        }
+        MediaCodec<R> enc = this.out.forAccept(q.header("Accept"));
+        if (enc == null) {
+            r.error(406, "no acceptable media type; supported: " + this.out.supported());
+            return;
+        }
+        T value = null;
+        boolean bad = false;
+        try {
+            value #= dec.decodeRange(body.store(), body.offset(), body.length());
+        } catch (RecoverableException e) {
+            bad = true;
+        }
+        if (bad || value == null) {
+            r.error(400, "the body is not valid " + dec.mediaType());
+            return;
+        }
+        Reply<R> reply = heap Reply<R>(r, enc, ctx);
+        (RequestView, T, Reply<R>) -> void h = this.handler;
+        h(q, value, reply);
+        return;
+    }
+}

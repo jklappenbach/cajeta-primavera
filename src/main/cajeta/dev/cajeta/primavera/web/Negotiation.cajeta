@@ -1,0 +1,144 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.lang.Slice;
+import cajeta.lang.String;
+import dev.cajeta.http.Bytes;
+
+/**
+ * `Content-Type`, `Accept` and `Accept-Encoding` matching (primavera-web
+ * spec §7.1, §7.3, §7.6), read in place from the header windows. Qualities
+ * are integer milli-units (0 to 1000), so no float is parsed on the
+ * request path.
+ */
+public final class Negotiation {
+
+    /** True when `contentType`'s type, without parameters, is `type`, ignoring case. */
+    public static boolean sameType(Slice<int8> contentType, String type) {
+        int64 semi = Bytes.indexOf(contentType, (int8) 59);
+        Slice<int8> bare = contentType;
+        if (semi >= (int64) 0) {
+            bare = contentType[0:semi];
+        }
+        return Bytes.equalsIgnoreCase(Bytes.trim(bare), type);
+    }
+
+    /**
+     * The quality `accept` gives `type`: the entry naming it exactly, else
+     * its major type's range, else the any-type range, the most specific one
+     * present deciding (comments nest, so the ranges are not spelled here). -1
+     * when no entry covers it. An absent or empty header accepts anything at 1000.
+     */
+    public static int32 quality(Slice<int8> accept, String type) {
+        if (Bytes.trim(accept).count() == (int64) 0) {
+            return 1000;
+        }
+        int64 slash = type.indexOf("/");
+        String major = slash >= (int64) 0 ? type.substring(0, (int32) slash + 1) + "*" : "*";
+        int32 exact = -1;
+        int32 range = -1;
+        int32 any = -1;
+        int64 n = accept.count();
+        int64 start = (int64) 0;
+        while (start < n) {
+            int64 end = start;
+            while (end < n && accept[end] != (int8) 44) {
+                end = end + (int64) 1;
+            }
+            Slice<int8> entry = accept[start:end];
+            Slice<int8> name = Negotiation.nameOf(entry);
+            if (Bytes.equalsIgnoreCase(name, type)) {
+                exact = Negotiation.milliQ(entry);
+            } else if (Bytes.equalsIgnoreCase(name, major)) {
+                range = Negotiation.milliQ(entry);
+            } else if (Bytes.equals(name, "*/*") || Bytes.equals(name, "*")) {
+                any = Negotiation.milliQ(entry);
+            }
+            start = end + (int64) 1;
+        }
+        if (exact >= 0) {
+            return exact;
+        }
+        if (range >= 0) {
+            return range;
+        }
+        return any;
+    }
+
+    /** An entry's name: the part before its first `;`, trimmed. */
+    static Slice<int8> nameOf(Slice<int8> entry) {
+        int64 semi = Bytes.indexOf(entry, (int8) 59);
+        if (semi < (int64) 0) {
+            return Bytes.trim(entry);
+        }
+        return Bytes.trim(entry[0:semi]);
+    }
+
+    /** The entry's `q` in milli-units, 1000 when it has none. */
+    static int32 milliQ(Slice<int8> entry) {
+        int64 n = entry.count();
+        int64 i = (int64) 0;
+        while (i + (int64) 1 < n) {
+            if ((entry[i] == (int8) 113 || entry[i] == (int8) 81) && entry[i + (int64) 1] == (int8) 61) {
+                return Negotiation.parseMilli(entry[i + (int64) 2:n]);
+            }
+            i = i + (int64) 1;
+        }
+        return 1000;
+    }
+
+    /** `0.5` as 500, `1` as 1000, lenient past the third decimal. */
+    static int32 parseMilli(Slice<int8> raw) {
+        Slice<int8> q = Bytes.trim(raw);
+        int64 n = q.count();
+        int64 i = (int64) 0;
+        int32 whole = 0;
+        while (i < n && q[i] >= (int8) 48 && q[i] <= (int8) 57) {
+            whole = whole * 10 + ((int32) q[i] - 48);
+            i = i + (int64) 1;
+        }
+        int32 milli = whole * 1000;
+        if (i < n && q[i] == (int8) 46) {
+            i = i + (int64) 1;
+            int32 scale = 100;
+            while (i < n && scale > 0 && q[i] >= (int8) 48 && q[i] <= (int8) 57) {
+                milli = milli + ((int32) q[i] - 48) * scale;
+                scale = scale / 10;
+                i = i + (int64) 1;
+            }
+        }
+        if (milli > 1000) {
+            return 1000;
+        }
+        return milli;
+    }
+
+    /**
+     * True when `acceptEncoding` refuses an unencoded response: `identity`
+     * at q=0, or `*` at q=0 with identity not listed. An absent header
+     * accepts identity.
+     */
+    public static boolean refusesIdentity(Slice<int8> acceptEncoding) {
+        int64 n = acceptEncoding.count();
+        int32 identity = -1;
+        int32 any = -1;
+        int64 start = (int64) 0;
+        while (start < n) {
+            int64 end = start;
+            while (end < n && acceptEncoding[end] != (int8) 44) {
+                end = end + (int64) 1;
+            }
+            Slice<int8> entry = acceptEncoding[start:end];
+            Slice<int8> name = Negotiation.nameOf(entry);
+            if (Bytes.equalsIgnoreCase(name, "identity")) {
+                identity = Negotiation.milliQ(entry);
+            } else if (Bytes.equals(name, "*")) {
+                any = Negotiation.milliQ(entry);
+            }
+            start = end + (int64) 1;
+        }
+        if (identity >= 0) {
+            return identity == 0;
+        }
+        return any == 0;
+    }
+}

@@ -1,0 +1,18 @@
+package dev.cajeta.sample.register;
+
+import cajeta.lang.String;
+import dev.cajeta.codec.protobuf.ProtoField;
+
+/** A registered user as `POST /users` answers it, in the type `Accept` negotiates. */
+public class Account {
+    @ProtoField(1) public String id;
+    @ProtoField(2) public String username;
+    @ProtoField(3) public boolean confirmed;
+
+    public Account() {
+        this.id = null;
+        this.username = null;
+        this.confirmed = false;
+        return;
+    }
+}

@@ -20,7 +20,8 @@
         "dependencies": {
             "dev.cajeta.primavera": "0.2.4",
             "dev.cajeta.http":      "0.6.0",
-            "dev.cajeta.cloud":     "0.2.4"
+            "dev.cajeta.cloud":     "0.2.4",
+            "dev.cajeta.codec":     "0.8.7"
         },
         "dev-dependencies": {},
         "repositories": [

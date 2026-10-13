@@ -1,7 +1,13 @@
 package dev.cajeta.sample.register;
 
+import cajeta.io.net.SocketAddress;
+import cajeta.io.net.TcpStream;
+import cajeta.lang.Slice;
 import cajeta.lang.String;
 import cajeta.time.Duration;
+import dev.cajeta.codec.protobuf.Protobuf;
+import dev.cajeta.http.Bytes;
+import dev.cajeta.http.coding.ContentCodings;
 import dev.cajeta.cloud.identity.MemoryUserPool;
 import dev.cajeta.http.ClientRequest;
 import dev.cajeta.http.ClientResponse;
@@ -9,16 +15,15 @@ import dev.cajeta.http.client.HttpClient;
 import cajeta.concurrent.Fiber;
 import dev.cajeta.http.ws.WebSocket;
 import dev.cajeta.http.ws.WsMessage;
-import dev.cajeta.primavera.web.Endpoints;
 import dev.cajeta.primavera.web.JsonBody;
 import dev.cajeta.primavera.web.WebServer;
-import dev.cajeta.primavera.web.WebServerBuilder;
 
 /**
- * The sample's self-test (primavera-web plan 2.1.1, 2.1.2, 2.1.4): the
- * registration contract end to end over one keep-alive connection, flat
- * buffer pools across N requests, and an equal live count across a run.
- * Exits 0 when every check passes.
+ * The sample's self-test (primavera-web plan 2.1.1, 2.1.2, 2.1.4, 5.1):
+ * the registration contract end to end over one keep-alive connection,
+ * each codec and coding pairing of spec §7.7, flat buffer pools across N
+ * requests, and an equal live count across a run. Exits 0 when every check
+ * passes.
  */
 public final class SampleSelfTest {
 
@@ -68,6 +73,124 @@ public final class SampleSelfTest {
         return resp.status();
     }
 
+    // One request over a fresh socket, `Connection: close`; the whole response.
+    // The client decodes codings itself, so a coded response is read here.
+    static #String raw(int32 port, String head, int8[] body, int32 bodyLen) {
+        TcpStream sock #= TcpStream.connectAsync(SocketAddress.parse("127.0.0.1:" + port));
+        String req = head + "Host: t\r\nConnection: close\r\nContent-Length: " + bodyLen + "\r\n\r\n";
+        int8[] hb #= req.toBytes();
+        sock.writeAllAsync(hb, (int64) 0, (int64) req.byteLength());
+        if (bodyLen > 0) {
+            sock.writeAllAsync(body, (int64) 0, (int64) bodyLen);
+        }
+        int8[] buf = heap int8[16384];
+        int32 n = 0;
+        int64 got = sock.readAsync(buf, (int64) 0, (int64) 16384);
+        while (got > (int64) 0) {
+            n = n + (int32) got;
+            got = sock.readAsync(buf, (int64) n, (int64) (16384 - n));
+        }
+        sock.close();
+        return Bytes.toString(buf[0:n]);
+    }
+
+    static boolean hasHeader(String response, String line) {
+        return response.indexOf(line) >= 0 || response.indexOf(line.toLowerCase()) >= 0;
+    }
+
+    static int32 send(HttpClient client, ClientResponse resp, String url, String contentType, String accept,
+                      String coding, int8[] body, int32 len) {
+        ClientRequest req #= ClientRequest.post(url);
+        req.setHeader("Content-Type", contentType);
+        if (accept != null) {
+            req.setHeader("Accept", accept);
+        }
+        if (coding != null) {
+            req.setHeader("Content-Encoding", coding);
+        }
+        req.body(body, len);
+        client.send(req, resp);
+        return resp.status();
+    }
+
+    // Spec §7.7 and plan 5.1: every codec and coding pairing on POST /users.
+    static void pairings(HttpClient client, ClientResponse resp, String base, int32 port) {
+        String url = base + "/users";
+        String pb = "application/x-protobuf";
+        Signup su = heap Signup();
+        su.username = "proto";
+        su.password = "correct horse";
+        int8[] wire #= Protobuf.toBytes<Signup>(su);
+
+        int32 s = SampleSelfTest.send(client, resp, url, pb, pb, null, wire, (int32) wire.count());
+        SampleSelfTest.check(s == 201, "a protobuf registration answers 201 (got " + s + ")");
+        Slice<int8> got = resp.body();
+        int8[] back #= Bytes.copyOf(got);
+        Account acct #= Protobuf.parse<Account>(back, back.count());
+        SampleSelfTest.check(acct.username != null && acct.username.equals("proto") && acct.id != null,
+            "Accept: protobuf answers a protobuf Account");
+        SampleSelfTest.check(SampleSelfTest.hasHeader(resp.headerString("Content-Type"), pb),
+            "the protobuf answer says so in Content-Type");
+
+        su.username = "proto2";
+        int8[] wire2 #= Protobuf.toBytes<Signup>(su);
+        s = SampleSelfTest.send(client, resp, url, pb, "application/json", null, wire2, (int32) wire2.count());
+        String asJson #= resp.bodyString();
+        SampleSelfTest.check(s == 201 && asJson.indexOf("\"username\":\"proto2\"") >= 0,
+            "a protobuf request answers JSON when JSON is accepted");
+
+        String json = "{\"username\":\"jsonpb\",\"password\":\"correct horse\"}";
+        int8[] jb #= json.toBytes();
+        s = SampleSelfTest.send(client, resp, url, "application/json", pb, null, jb, (int32) jb.count());
+        int8[] back2 #= Bytes.copyOf(resp.body());
+        Account acct2 #= Protobuf.parse<Account>(back2, back2.count());
+        SampleSelfTest.check(s == 201 && acct2.username != null && acct2.username.equals("jsonpb"),
+            "a JSON request answers protobuf when protobuf is accepted");
+
+        String zipped = "{\"username\":\"zipped\",\"password\":\"correct horse\"}";
+        int8[] zb #= zipped.toBytes();
+        int8[] gz #= ContentCodings.compressor("gzip").compress(zb, zb.count(), 1);
+        s = SampleSelfTest.send(client, resp, url, "application/json", null, "gzip", gz, (int32) gz.count());
+        SampleSelfTest.check(s == 201, "a gzip-coded JSON body registers (got " + s + ")");
+
+        String plain = "{\"username\":\"coded\",\"password\":\"correct horse\"}";
+        int8[] pl #= plain.toBytes();
+        String coded #= SampleSelfTest.raw(port, "POST /users HTTP/1.1\r\nContent-Type: application/json\r\nAccept-Encoding: gzip\r\n", pl, (int32) pl.count());
+        SampleSelfTest.check(coded.indexOf(" 201 ") >= 0 && SampleSelfTest.hasHeader(coded, "Content-Encoding: gzip"),
+            "the answer is gzip-coded when gzip is accepted");
+
+        String xml = "<signup/>";
+        int8[] xb #= xml.toBytes();
+        s = SampleSelfTest.send(client, resp, url, "application/xml", null, null, xb, (int32) xb.count());
+        String unsupported #= resp.bodyString();
+        SampleSelfTest.check(s == 415 && unsupported.indexOf(pb) >= 0 && unsupported.indexOf("application/json") >= 0,
+            "an unknown media type answers 415 naming JSON and protobuf (" + s + ")");
+        s = SampleSelfTest.send(client, resp, url, "application/json", "application/xml", null, jb, (int32) jb.count());
+        String unacceptable #= resp.bodyString();
+        SampleSelfTest.check(s == 406 && unacceptable.indexOf(pb) >= 0, "an unmet Accept answers 406 naming the types (" + s + ")");
+
+        String br #= SampleSelfTest.raw(port, "POST /users HTTP/1.1\r\nContent-Type: application/json\r\nContent-Encoding: br\r\n", jb, (int32) jb.count());
+        SampleSelfTest.check(br.indexOf(" 415 ") >= 0 && SampleSelfTest.hasHeader(br, "Accept-Encoding: "),
+            "an unknown content coding answers 415 with Accept-Encoding");
+        String refused #= SampleSelfTest.raw(port, "POST /users HTTP/1.1\r\nContent-Type: application/json\r\nAccept-Encoding: br, identity;q=0\r\n", jb, jb.count());
+        SampleSelfTest.check(refused.indexOf(" 406 ") >= 0, "a request refusing every coding held answers 406");
+
+        // Spec §11.6: x-reverse exists only in the test profile.
+        String rev = "{\"username\":\"reversed\",\"password\":\"correct horse\"}";
+        int8[] rb #= rev.toBytes();
+        int8[] flipped = heap int8[rb.count()];
+        int32 k = 0;
+        while (k < rb.count()) {
+            flipped[k] = rb[rb.count() - 1 - k];
+            k = k + 1;
+        }
+        String viaTest #= SampleSelfTest.raw(port, "POST /users HTTP/1.1\r\nContent-Type: application/json\r\nContent-Encoding: x-reverse\r\nAccept-Encoding: x-reverse\r\n", flipped, (int32) flipped.count());
+        SampleSelfTest.check(viaTest.indexOf(" 201 ") >= 0 && SampleSelfTest.hasHeader(viaTest, "Content-Encoding: x-reverse")
+            && viaTest.indexOf("}eslaf:\"demrifnoc\"") >= 0,
+            "the test profile's x-reverse coding is negotiated both ways");
+        return;
+    }
+
     static async int32 contract(int32 port, MemoryUserPool pool, WebServer web) {
         String base = "http://127.0.0.1:" + port;
         HttpClient client = heap HttpClient();
@@ -94,6 +217,8 @@ public final class SampleSelfTest {
 
         s = SampleSelfTest.post(client, resp, base + "/users", "not json");
         SampleSelfTest.check(s == 400, "a body that is not JSON answers 400 (got " + s + ")");
+
+        SampleSelfTest.pairings(client, resp, base, port);
 
         s = SampleSelfTest.get(client, resp, base + "/users/" + id);
         String found #= resp.bodyString();
@@ -202,15 +327,8 @@ public final class SampleSelfTest {
     static void once() {
         RegisterApp app = heap RegisterApp();
         MemoryUserPool pool = app.users();
-        Endpoints api = heap Endpoints();
-        RegisterApp.routes(api, pool, app.records(), app.events());
         scope {
-            WebServerBuilder b #= WebServer.builder();
-            b.bind("127.0.0.1:0");
-            b.endpoints(#api);
-            b.websockets(Events.sockets());
-            WebServer web #= b.build();
-            app.events().attach(web.connections());
+            WebServer web #= RegisterApp.server("127.0.0.1:0", app);
             int32 port = web.port();
             Task<int32> sv = spawn serve(web);
             Task<int32> tc = spawn contract(port, pool, web);

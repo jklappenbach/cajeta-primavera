@@ -1,0 +1,16 @@
+package dev.cajeta.sample.register;
+
+import cajeta.lang.String;
+import dev.cajeta.codec.protobuf.ProtoField;
+
+/** A registration request, in JSON or as a protobuf message (primavera-web spec §7.7). */
+public class Signup {
+    @ProtoField(1) public String username;
+    @ProtoField(2) public String password;
+
+    public Signup() {
+        this.username = null;
+        this.password = null;
+        return;
+    }
+}

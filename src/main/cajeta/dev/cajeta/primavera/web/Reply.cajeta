@@ -1,0 +1,64 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.lang.String;
+import dev.cajeta.http.HttpResponse;
+import dev.cajeta.primavera.pipeline.Buffer;
+import dev.cajeta.primavera.pipeline.RequestContext;
+
+/**
+ * A codec endpoint's response (primavera-web spec §7.1, §7.14): `send`
+ * encodes the value in the media type `Accept` negotiated. A codec that
+ * bounds its output writes into a buffer taken from the pipeline's pool,
+ * so the encoding makes no array of its own; any other codec's `encode`
+ * result is copied in. One per request.
+ */
+public final class Reply<R> {
+
+    Response res;
+    MediaCodec<R> codec;
+    RequestContext ctx;
+
+    Reply(^Response res, ^MediaCodec<R> codec, ^RequestContext ctx) {
+        this.res = res;
+        this.codec = codec;
+        this.ctx = ctx;
+        return;
+    }
+
+    /** The negotiated media type. */
+    public String mediaType() { return this.codec.mediaType(); }
+
+    /** The response builder, for headers and anything `send` does not cover. */
+    public Response response() { return this.res; }
+
+    /** `value` encoded in the negotiated type, with status `code`. */
+    public void send(int32 code, R value) {
+        HttpResponse r = this.res.raw();
+        r.status(code);
+        r.setHeader("Content-Type", this.codec.mediaType());
+        int32 bound = this.codec.sizeBound(value);
+        if (bound >= 0 && bound <= this.ctx.bufferSize()) {
+            Buffer b = this.ctx.take();
+            int8[] store = b.store();
+            int32 n = this.codec.encodeInto(value, store, 0);
+            r.write(store, 0, n);
+            this.ctx.release(b);
+            return;
+        }
+        int8[] bytes #= this.codec.encode(value);
+        r.write(bytes, 0, bytes.count());
+        return;
+    }
+
+    /** A JSON error body `{"error": message}`, whatever was negotiated. */
+    public void error(int32 code, String message) {
+        this.res.error(code, message);
+        return;
+    }
+
+    /** A status with no body. */
+    public void empty(int32 code) {
+        this.res.empty(code);
+        return;
+    }
+}

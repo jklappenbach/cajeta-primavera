@@ -1,0 +1,26 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.lang.String;
+import cajeta.wire.BufferEncoder;
+import cajeta.wire.Encoder;
+
+/**
+ * A body codec for `T` under one media type (primavera-web spec §7.1,
+ * §7.2). It is a `cajeta.wire.Encoder<T>`, and its `encodeInto` writes the
+ * same bytes into a caller's buffer when {@link #sizeBound} promises they
+ * fit, so a response is encoded into a pooled buffer with no array of its
+ * own. A codec that cannot bound its output answers -1 and is encoded with
+ * `encode`. An application contributes codecs as components and injects
+ * them as `ArrayList<MediaCodec<T>>`; see {@link Codecs}.
+ */
+public interface MediaCodec<T> extends Encoder<T>, BufferEncoder<T> {
+
+    /** The media type this codec reads and writes, lowercase, such as `application/json`. */
+    String mediaType();
+
+    /** Decodes `store[off .. off + len)` into a fresh `T`. A malformed body throws. */
+    #T decodeRange(int8[] store, int32 off, int32 len);
+
+    /** At least the number of bytes `encodeInto(value, ...)` writes, or -1 when it cannot say. */
+    int32 sizeBound(T value);
+}
