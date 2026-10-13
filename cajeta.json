@@ -33,7 +33,7 @@
         // src/main until the pin moved. Keep this in step with the
         // `cajeta-version` in .github/workflows/release.yml.
         "toolchain": {
-            "version": "0.39.0",
+            "version": "0.41.0",
             "from":    "https://olla.cajeta.dev"
         },
 
