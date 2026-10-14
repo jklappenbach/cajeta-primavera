@@ -1,12 +1,13 @@
 package dev.cajeta.primavera.web;
 
 import dev.cajeta.primavera.pipeline.BufferSource;
+import dev.cajeta.primavera.pipeline.Kind;
 import dev.cajeta.primavera.pipeline.Pipeline;
 
 /**
  * The standard HTTP pipeline (primavera-web spec §7.18) as far as this phase
- * builds it: content coding, routing, binding, handler. Authentication
- * joins with the security phase.
+ * builds it: content coding, routing, binding, handler, and a {@link Guard}'s
+ * authentication and authorization between routing and binding.
  */
 public final class HttpPipeline {
 
@@ -21,6 +22,20 @@ public final class HttpPipeline {
         p.add(heap CodingStage(compressAbove));
         p.add(heap RoutingStage(endpoints));
         p.add(heap BindingStage(endpoints));
+        p.add(heap HandlerStage(endpoints));
+        return;
+    }
+
+    /**
+     * The standard stages with `guard` between routing and binding (spec
+     * §8): the guard's stages take ROUTED to AUTHORIZED, and binding
+     * consumes AUTHORIZED.
+     */
+    public static void addGuarded(Pipeline p, Endpoints endpoints, int32 compressAbove, Guard guard) {
+        p.add(heap CodingStage(compressAbove));
+        p.add(heap RoutingStage(endpoints));
+        guard.install(p, endpoints);
+        p.add(heap BindingStage(endpoints, Kind.AUTHORIZED()));
         p.add(heap HandlerStage(endpoints));
         return;
     }

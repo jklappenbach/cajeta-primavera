@@ -1,0 +1,81 @@
+package dev.cajeta.primavera.security;
+
+import cajeta.collection.ArrayList;
+import cajeta.concurrent.Lock;
+import cajeta.concurrent.LockGuard;
+import cajeta.hash.SecureRandom;
+import cajeta.lang.String;
+import cajeta.codec.Base64;
+import dev.cajeta.primavera.context.SystemTimeSource;
+import dev.cajeta.primavera.context.TimeSource;
+
+/**
+ * Opaque handles for sign-in challenges in flight (primavera-web spec §8.4,
+ * §8.6). A login that answers a challenge hands the client a handle from the
+ * CSPRNG, and the provider's session stays on the server behind it. A handle
+ * is good once and for `ttlMillis`; taking it ends it, so a wrong answer
+ * means signing in again.
+ */
+public final class ChallengeHandles {
+
+    Lock gate;
+    ArrayList<PendingChallenge> open;
+    TimeSource clock;
+    int64 ttl;
+
+    /** Handles that live three minutes on the wall clock. */
+    public ChallengeHandles() {
+        this.gate = heap Lock();
+        this.open = heap ArrayList<PendingChallenge>();
+        this.clock = heap SystemTimeSource();
+        this.ttl = 180000L;
+        return;
+    }
+
+    /** A fresh handle: 32 bytes from the CSPRNG, base64url. */
+    public static #String mint() {
+        int8[] raw #= SecureRandom.bytes(32L);
+        return Base64.encodeUrlSafe(raw, 32L);
+    }
+
+    /** A handle standing for `session`, the provider's, for `username`'s challenge of `kind`. */
+    public #String issue(String session, String username, int32 kind) {
+        LockGuard g #= this.gate.acquire();
+        int64 now = this.clock.now();
+        int32 i = this.open.count() - 1;
+        while (i >= 0) {
+            if (this.open.get(i).expiresMillis <= now) {
+                PendingChallenge gone #= this.open.removeAt(i);
+            }
+            i = i - 1;
+        }
+        String h #= ChallengeHandles.mint();
+        PendingChallenge p = heap PendingChallenge(h, session, username, kind, now + this.ttl);
+        this.open.add(#p);
+        return #h;
+    }
+
+    /** The challenge behind `handle`, ending it; null when unknown, used or expired. */
+    public #PendingChallenge take(String handle) {
+        LockGuard g #= this.gate.acquire();
+        int64 now = this.clock.now();
+        int32 i = 0;
+        while (i < this.open.count()) {
+            if (this.open.get(i).handleText.equals(handle)) {
+                PendingChallenge p #= this.open.removeAt(i);
+                if (p.expiresMillis <= now) {
+                    return null;
+                }
+                return #p;
+            }
+            i = i + 1;
+        }
+        return null;
+    }
+
+    /** Handles not yet taken, expired ones included until the next issue sweeps them. */
+    public int32 count() {
+        LockGuard g #= this.gate.acquire();
+        return this.open.count();
+    }
+}

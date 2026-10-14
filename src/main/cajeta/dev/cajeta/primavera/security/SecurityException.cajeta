@@ -1,0 +1,17 @@
+package dev.cajeta.primavera.security;
+
+import cajeta.error.RecoverableException;
+import cajeta.lang.String;
+
+/**
+ * Startup refused by the security configuration: a route with no rule, a
+ * rule for a route the server does not serve, two rules for one route, or a
+ * required identity capability the selected driver lacks. The message names
+ * the route or the capability.
+ */
+public class SecurityException extends RecoverableException {
+    public SecurityException(String message) {
+        this.message = "" + message;
+        this.cause = 0;
+    }
+}

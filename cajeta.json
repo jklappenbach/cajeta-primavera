@@ -51,6 +51,7 @@
         "dependencies": {
             "dev.cajeta.logging": "0.8.6",
             "dev.cajeta.http":    "0.6.0",
+            "dev.cajeta.cloud":   "0.3.0",
             "dev.cajeta.unit":    "0.3.6"
         },
 

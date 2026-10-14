@@ -1,0 +1,39 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.lang.String;
+
+/**
+ * A registered route's identity (primavera-spec §8 commitment 2). A rule
+ * names a route by this object, which only a registration hands out, never
+ * by a path string the rule would have to match. The token is unique in the
+ * process; the method and pattern are for messages only.
+ */
+public final class RouteId {
+
+    static int32 NEXT = 0;
+
+    int32 key;
+    String verb;
+    String route;
+
+    RouteId(String method, String pattern) {
+        RouteId.NEXT = RouteId.NEXT + 1;
+        this.key = RouteId.NEXT;
+        this.verb #= method.substring(0, method.byteLength());
+        this.route #= pattern.substring(0, pattern.byteLength());
+        return;
+    }
+
+    /** The process-unique token that identifies this route. */
+    public int32 token() { return this.key; }
+
+    public String method() { return this.verb; }
+
+    public String pattern() { return this.route; }
+
+    /** `METHOD pattern`, for messages. */
+    public #String describe() {
+        String out = this.verb + " " + this.route;
+        return #out;
+    }
+}

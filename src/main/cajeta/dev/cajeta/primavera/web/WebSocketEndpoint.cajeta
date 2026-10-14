@@ -6,10 +6,12 @@ import cajeta.lang.String;
 public final class WebSocketEndpoint {
     String path;
     (Connection, JsonBody) -> void json;
+    RouteId id;
 
     WebSocketEndpoint(String path, (Connection, JsonBody) -> void json) {
         this.path #= path.substring(0, path.byteLength());
         this.json #= json;
+        this.id #= heap RouteId("GET", path);
         return;
     }
 

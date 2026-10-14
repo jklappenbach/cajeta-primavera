@@ -1,0 +1,15 @@
+package dev.cajeta.primavera.web;
+
+import dev.cajeta.primavera.pipeline.Pipeline;
+
+/**
+ * The security seam of the standard pipeline (primavera-web spec §8). A
+ * server built with a guard runs it between routing and binding: the guard
+ * appends its stages, which take the pipeline from ROUTED to AUTHORIZED, and
+ * binding then consumes AUTHORIZED, so a misordered pipeline fails its build.
+ * `install` runs after every route, WebSocket paths included, is registered,
+ * and throws to refuse startup.
+ */
+public interface Guard {
+    void install(Pipeline p, Endpoints api);
+}

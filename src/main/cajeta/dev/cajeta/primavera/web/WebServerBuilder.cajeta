@@ -24,6 +24,7 @@ public final class WebServerBuilder {
     Endpoints api;
     WebSocketEndpoints sockets;
     ArrayList<Stage> leading;
+    Guard gate;
 
     public WebServerBuilder() {
         this.addr = "127.0.0.1:0";
@@ -32,6 +33,7 @@ public final class WebServerBuilder {
         this.api = null;
         this.sockets = null;
         this.leading = heap ArrayList<Stage>();
+        this.gate = null;
         return;
     }
 
@@ -72,6 +74,16 @@ public final class WebServerBuilder {
         return this;
     }
 
+    /**
+     * Secures every route with `g` (spec §8). The guard sees every route,
+     * WebSocket paths included, before the server binds, and may refuse to
+     * start.
+     */
+    public WebServerBuilder guard(#Guard g) {
+        this.gate #= g;
+        return this;
+    }
+
     /** Builds the pipeline, checks it, and binds the server. */
     public #WebServer build() {
         WebServer ws = heap WebServer();
@@ -92,7 +104,13 @@ public final class WebServerBuilder {
             p.add(#s);
         }
         ContentCodingProviders.install();
-        HttpPipeline.addStandard(p, ws.endpoints, this.codeAbove);
+        if (this.gate != null) {
+            ws.guard #= this.gate;
+            this.gate = null;
+            HttpPipeline.addGuarded(p, ws.endpoints, this.codeAbove, ws.guard);
+        } else {
+            HttpPipeline.addStandard(p, ws.endpoints, this.codeAbove);
+        }
         p.build();
         ws.pipeline #= p;
         Dispatch d = heap Dispatch(ws.pipeline, ws.source);

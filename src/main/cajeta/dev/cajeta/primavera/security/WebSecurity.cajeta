@@ -1,0 +1,284 @@
+package dev.cajeta.primavera.security;
+
+import cajeta.aot.Components;
+import cajeta.collection.ArrayList;
+import cajeta.lang.String;
+import dev.cajeta.cloud.identity.Claims;
+import dev.cajeta.cloud.identity.IdentityException;
+import dev.cajeta.cloud.identity.TokenUse;
+import dev.cajeta.cloud.identity.TokenVerifier;
+import dev.cajeta.cloud.identity.UserPool;
+import dev.cajeta.http.HttpRequest;
+import dev.cajeta.http.HttpResponse;
+import dev.cajeta.logging.Level;
+import dev.cajeta.logging.LogRecord;
+import dev.cajeta.logging.Logged;
+import dev.cajeta.logging.Logger;
+import dev.cajeta.primavera.identity.UserDirectory;
+import dev.cajeta.primavera.identity.UserRecord;
+import dev.cajeta.primavera.pipeline.Pipeline;
+import dev.cajeta.primavera.pipeline.RequestContext;
+import dev.cajeta.primavera.web.Endpoints;
+import dev.cajeta.primavera.web.Guard;
+import dev.cajeta.primavera.web.RouteId;
+import dev.cajeta.primavera.web.RouteMatch;
+
+/**
+ * Bearer-token security for a web server (primavera-web spec §8). Install it
+ * with `WebServerBuilder.guard`. Every route needs a rule, named by the
+ * {@link RouteId} its registration returned; a route without one refuses
+ * startup, and so does a rule for a route the server does not serve
+ * (primavera-spec §8 commitments 2 to 4).
+ *
+ * Per request, authentication reads `Authorization: Bearer`, verifies the
+ * token through the identity port's {@link TokenVerifier}, resolves the
+ * principal through the {@link UserDirectory} and maps the token's groups to
+ * roles. Authorization then applies the route's {@link Policy}. A refusal
+ * answers 401 or 403 with a body that never says why; the log line does
+ * (spec §8.7), and it never carries the token.
+ *
+ * ```cajeta
+ * WebSecurity sec = heap WebSecurity(pool, directory);
+ * sec.grant("members", "user").requires(IdentityCapability.TOTP());
+ * api.route("GET", "/users/me", handler);
+ * sec.rule(api.last(), Policy.role("user"));
+ * builder.guard(#sec);
+ * ```
+ */
+@Logged
+public final class WebSecurity implements Guard {
+
+    UserPool pool;
+    UserDirectory directory;
+    String provider;
+    ArrayList<String> groupNames;
+    ArrayList<String> roleNames;
+    ArrayList<String> required;
+    ArrayList<Rule> rules;
+    int32[] ruleOf;
+    Logger audit;
+
+    /**
+     * Security over `pool`'s token verifier and `directory`'s principals.
+     * Both are borrowed, so they must outlive the server. Subjects are
+     * linked under the pool's adapter name.
+     */
+    public WebSecurity(^UserPool pool, ^UserDirectory directory) {
+        this.pool = pool;
+        this.directory = directory;
+        this.provider #= pool.capabilities().adapterName();
+        this.groupNames = heap ArrayList<String>();
+        this.roleNames = heap ArrayList<String>();
+        this.required = heap ArrayList<String>();
+        this.rules = heap ArrayList<Rule>();
+        this.ruleOf = null;
+        this.audit = null;
+        return;
+    }
+
+    /** A token in `group` holds `role` (spec §8.3). The port never sees roles. */
+    public WebSecurity grant(String group, String role) {
+        String g #= group.substring(0, group.byteLength());
+        String r #= role.substring(0, role.byteLength());
+        this.groupNames.add(#g);
+        this.roleNames.add(#r);
+        return this;
+    }
+
+    /** Startup fails unless the identity driver declares `capability` (spec §8.5). */
+    public WebSecurity requires(String capability) {
+        String c #= capability.substring(0, capability.byteLength());
+        this.required.add(#c);
+        return this;
+    }
+
+    /** The route `route` is served under `policy`. */
+    public WebSecurity rule(RouteId route, #Policy policy) {
+        Rule r = heap Rule(route, #policy);
+        this.rules.add(#r);
+        return this;
+    }
+
+    /**
+     * Refusals are logged to `logger` instead of this class's own logger: an
+     * audit stream, or a capturing logger in a test. A lent logger must
+     * outlive the server.
+     */
+    public WebSecurity auditTo(Logger logger) {
+        this.audit #= logger;
+        return this;
+    }
+
+    /** How many rules are held. */
+    public int32 ruleCount() { return this.rules.count(); }
+
+    static #SecurityException refuse(String why) {
+        SecurityException e = heap SecurityException(why);
+        return #e;
+    }
+
+    /** Checks the configuration against `api` and appends authentication and authorization. */
+    public void install(Pipeline p, Endpoints api) {
+        int32 k = 0;
+        while (k < this.required.count()) {
+            String cap = this.required.get(k);
+            if (!this.pool.capabilities().supports(cap)) {
+                throw WebSecurity.refuse("security requires " + cap + ", which the "
+                    + this.provider + " identity driver does not declare");
+            }
+            k = k + 1;
+        }
+        int32 n = api.count();
+        this.ruleOf = heap int32[n];
+        int32 i = 0;
+        while (i < n) {
+            RouteId id = api.routeAt(i);
+            int32 found = -1;
+            int32 j = 0;
+            while (j < this.rules.count()) {
+                if (this.rules.get(j).token == id.token()) {
+                    if (found >= 0) {
+                        throw WebSecurity.refuse(id.describe() + " has two security rules");
+                    }
+                    found = j;
+                }
+                j = j + 1;
+            }
+            if (found < 0) {
+                throw WebSecurity.refuse(id.describe() + " has no security rule; every route needs one, "
+                    + "Policy.anyone() for a public route");
+            }
+            this.rules.get(found).placed = true;
+            this.ruleOf[i] = found;
+            i = i + 1;
+        }
+        int32 r = 0;
+        while (r < this.rules.count()) {
+            if (!this.rules.get(r).placed) {
+                throw WebSecurity.refuse("a security rule names " + this.rules.get(r).route
+                    + ", which this server does not serve");
+            }
+            r = r + 1;
+        }
+        p.add(heap AuthenticationStage(this));
+        p.add(heap AuthorizationStage(this));
+        return;
+    }
+
+    // Writes the uniform refusal and logs why. The body is the same for
+    // every cause of a status; `reason` goes to the log only.
+    void deny(RequestContext ctx, int32 status, String reason) {
+        HttpResponse r = ctx.response();
+        r.reset();
+        r.status(status);
+        r.setHeader("Content-Type", "application/json");
+        if (status == 401) {
+            r.setHeader("WWW-Authenticate", "Bearer");
+            r.write("{\"error\":\"unauthorized\"}");
+        } else {
+            r.write("{\"error\":\"forbidden\"}");
+        }
+        ctx.respond(status);
+        Logger out = log;
+        if (this.audit != null) {
+            out = this.audit;
+        }
+        if (out.enabled(Level.WARN)) {
+            LogRecord rec #= out.event(Level.WARN, "request refused");
+            rec.i64("status", (int64) status);
+            rec.str("reason", reason);
+            out.emit(#rec);
+        }
+        return;
+    }
+
+    static boolean bearer(String header) {
+        if (header.byteLength() < 8) {
+            return false;
+        }
+        String scheme = "bearer ";
+        int32 i = 0;
+        while (i < 7) {
+            int8 c = header.byteAt(i);
+            if (c >= (int8) 65 && c <= (int8) 90) {
+                c = (int8) (c + 32);
+            }
+            if (c != scheme.byteAt(i)) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    // Authentication: provides the request's SecurityContext, or refuses.
+    void authenticate(RequestContext ctx) {
+        HttpRequest q = ctx.request();
+        String header #= q.headerString("Authorization");
+        SecurityContext sc = heap SecurityContext(0);
+        if (header == null) {
+            Components.provide(#sc);
+            return;
+        }
+        if (!WebSecurity.bearer(header)) {
+            this.deny(ctx, 401, "the Authorization header is not a bearer token");
+            return;
+        }
+        String token #= header.substring(7, header.byteLength());
+        Claims c #= this.verify(ctx, token);
+        if (c == null) {
+            return;
+        }
+        String subject #= c.subject();
+        UserRecord rec #= this.directory.findBySubject(this.provider, subject);
+        if (rec == null) {
+            this.deny(ctx, 401, "no user record links " + this.provider + " subject " + subject);
+            return;
+        }
+        sc.principalId = "" + rec.id();
+        sc.userName = "" + rec.username();
+        sc.subjectId #= subject;
+        int32 g = 0;
+        while (g < c.groupCount()) {
+            String group #= c.groupAt(g);
+            int32 m = 0;
+            while (m < this.groupNames.count()) {
+                if (this.groupNames.get(m).equals(group) && !sc.hasRole(this.roleNames.get(m))) {
+                    String role = "" + this.roleNames.get(m);
+                    sc.granted.add(#role);
+                }
+                m = m + 1;
+            }
+            g = g + 1;
+        }
+        sc.verified #= c;
+        Components.provide(#sc);
+        return;
+    }
+
+    #Claims verify(RequestContext ctx, String token) {
+        try {
+            return this.pool.verifier().verify(token, TokenUse.ACCESS());
+        } catch (IdentityException e) {
+            this.deny(ctx, 401, e.getMessage());
+            return null;
+        }
+    }
+
+    // Authorization: the matched route's rule over the request's context.
+    void authorize(RequestContext ctx) {
+        RouteMatch m = RouteMatch.__cajeta_inject();
+        Rule rule = this.rules.get(this.ruleOf[m.index()]);
+        SecurityContext sc = SecurityContext.__cajeta_inject();
+        if (rule.policy.admits(sc)) {
+            return;
+        }
+        if (!sc.isAuthenticated()) {
+            this.deny(ctx, 401, rule.route + " needs a principal under " + rule.policy.describe());
+            return;
+        }
+        this.deny(ctx, 403, rule.route + " refused principal " + sc.principal()
+            + " under " + rule.policy.describe());
+        return;
+    }
+}

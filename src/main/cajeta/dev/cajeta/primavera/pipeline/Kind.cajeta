@@ -14,6 +14,7 @@ public final class Kind {
     public static int32 ROUTED()        { return 2; }
     public static int32 AUTHENTICATED() { return 3; }
     public static int32 BOUND()         { return 4; }
+    public static int32 AUTHORIZED()    { return 5; }
 
     public static #String name(int32 kind) {
         if (kind == 0) { String raw = "raw"; return #raw; }
@@ -21,6 +22,7 @@ public final class Kind {
         if (kind == 2) { String routed = "routed"; return #routed; }
         if (kind == 3) { String authenticated = "authenticated"; return #authenticated; }
         if (kind == 4) { String bound = "bound"; return #bound; }
+        if (kind == 5) { String authorized = "authorized"; return #authorized; }
         String other = "kind-" + (int64) kind;
         return #other;
     }

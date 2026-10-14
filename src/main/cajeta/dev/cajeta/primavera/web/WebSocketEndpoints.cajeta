@@ -47,6 +47,9 @@ public final class WebSocketEndpoints {
 
     public int32 count() { return this.list.count(); }
 
+    /** The identity of the path declared last, for a security rule on its upgrade route. */
+    public RouteId last() { return this.list.get(this.list.count() - 1).id; }
+
     // Adds an upgrading GET route to `api` for every path.
     void install(Endpoints api, ConnectionRegistry registry) {
         int32 i = 0;
@@ -60,7 +63,7 @@ public final class WebSocketEndpoints {
     void installOne(Endpoints api, WebSocketEndpoint e, ConnectionRegistry registry) {
         int32 bound = this.bound;
         int32 overflow = this.overflow;
-        api.route("GET", e.path(), (RequestView q, Response r) ->
+        api.routeAs(e.id, (RequestView q, Response r) ->
             WebSocketEndpoints.upgrade(q, r, e, registry, bound, overflow));
         return;
     }

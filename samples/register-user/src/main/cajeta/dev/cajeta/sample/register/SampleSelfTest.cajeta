@@ -15,15 +15,30 @@ import dev.cajeta.http.client.HttpClient;
 import cajeta.concurrent.Fiber;
 import dev.cajeta.http.ws.WebSocket;
 import dev.cajeta.http.ws.WsMessage;
+import cajeta.codec.Base32;
+import cajeta.collection.ArrayList;
+import cajeta.hash.Totp;
+import cajeta.process.Command;
+import cajeta.process.ProcessResult;
+import cajeta.time.Clock;
+import dev.cajeta.cloud.identity.IdentityCapability;
+import dev.cajeta.cloud.identity.IdentitySelector;
+import dev.cajeta.logging.CapturingAppender;
+import dev.cajeta.logging.JsonlEncoder;
+import dev.cajeta.logging.Level;
+import dev.cajeta.logging.Logger;
+import dev.cajeta.primavera.security.SecurityException;
 import dev.cajeta.primavera.web.JsonBody;
 import dev.cajeta.primavera.web.WebServer;
 
 /**
- * The sample's self-test (primavera-web plan 2.1.1, 2.1.2, 2.1.4, 5.1):
- * the registration contract end to end over one keep-alive connection,
- * each codec and coding pairing of spec §7.7, flat buffer pools across N
- * requests, and an equal live count across a run. Exits 0 when every check
- * passes.
+ * The sample's self-test (primavera-web plan 2.1.1, 2.1.2, 2.1.4, 5.1,
+ * 6.1): the registration contract end to end over one keep-alive
+ * connection, each codec and coding pairing of spec §7.7, the security flow
+ * from registration to logout, flat buffer pools across N requests, and an
+ * equal live count across a run. Its argument is the production build of
+ * the sample, which must refuse to start with no identity provider named.
+ * Exits 0 when every check passes.
  */
 public final class SampleSelfTest {
 
@@ -71,6 +86,170 @@ public final class SampleSelfTest {
         ClientRequest req = heap ClientRequest(url);
         client.send(req, resp);
         return resp.status();
+    }
+
+    static int32 getAs(HttpClient client, ClientResponse resp, String url, String token) {
+        ClientRequest req = heap ClientRequest(url);
+        req.setHeader("Authorization", "Bearer " + token);
+        client.send(req, resp);
+        return resp.status();
+    }
+
+    static int32 postAs(HttpClient client, ClientResponse resp, String url, String token, String body) {
+        ClientRequest req #= ClientRequest.post(url);
+        req.setHeader("Content-Type", "application/json");
+        req.setHeader("Authorization", "Bearer " + token);
+        req.body(body);
+        client.send(req, resp);
+        return resp.status();
+    }
+
+    // The six-digit code for `secret` (Base32) at now plus `ahead` seconds.
+    static #String totp(String secret, int64 ahead) {
+        int8[] key #= Base32.decode(secret);
+        int64 now = Clock.millisTime() / 1000L + ahead;
+        return Totp.format(Totp.code(key, key.count(), now, 30, 6), 6);
+    }
+
+    // Keeps a secret the flow handled, for the captured-output check
+    // (6.1.7). The list is the run's own local: a static reassigned per run
+    // keeps the old list alive (measured 2026-10-13), which the live-count
+    // check then reads as a leak.
+    static void secret(ArrayList<String> secrets, String s) {
+        String kept = "" + s;
+        secrets.add(#kept);
+        return;
+    }
+
+    // Signs `username` in through MFA setup and answers the tokens' JSON;
+    // `secretOut` gets the TOTP secret. Empty on any failure.
+    static #String firstLogin(HttpClient client, ClientResponse resp, String base, String username,
+                              ArrayList<String> secretOut, ArrayList<String> secrets) {
+        int32 s = SampleSelfTest.post(client, resp, base + "/login",
+            "{\"username\":\"" + username + "\",\"password\":\"correct horse\"}");
+        String first #= resp.bodyString();
+        String kind #= SampleSelfTest.field(first, "challenge");
+        SampleSelfTest.check(s == 200 && kind.equals("MFA_SETUP"),
+            "login with TOTP required and none enrolled answers MFA_SETUP (" + s + " " + first + ")");
+        String h1 #= SampleSelfTest.field(first, "session");
+        s = SampleSelfTest.post(client, resp, base + "/login/challenge", "{\"session\":\"" + h1 + "\"}");
+        String setup #= resp.bodyString();
+        String secret #= SampleSelfTest.field(setup, "secret");
+        String h2 #= SampleSelfTest.field(setup, "session");
+        SampleSelfTest.check(s == 200 && secret.byteLength() >= 16 && h2.byteLength() > 0 && !h2.equals(h1),
+            "the challenge endpoint enrols TOTP under a fresh handle (" + s + ")");
+        SampleSelfTest.secret(secrets, secret);
+        String code #= SampleSelfTest.totp(secret, 0L);
+        SampleSelfTest.secret(secrets, code);
+        s = SampleSelfTest.post(client, resp, base + "/login/challenge",
+            "{\"session\":\"" + h2 + "\",\"code\":\"" + code + "\"}");
+        String tokens #= resp.bodyString();
+        SampleSelfTest.check(s == 200 && SampleSelfTest.field(tokens, "access_token").byteLength() > 0,
+            "a TOTP code completes the setup with tokens (" + s + ")");
+        secretOut.add(#secret);
+        return #tokens;
+    }
+
+    // Spec §8 and plan 6.1.1 to 6.1.3, 6.1.7 over the sample's endpoints.
+    static void security(HttpClient client, ClientResponse resp, String base, MemoryUserPool pool, String adaId,
+                         ArrayList<String> secrets) {
+        int32 s = SampleSelfTest.get(client, resp, base + "/users/me");
+        String anon #= resp.bodyString();
+        SampleSelfTest.check(s == 401, "GET /users/me without a token answers 401 (got " + s + ")");
+
+        s = SampleSelfTest.post(client, resp, base + "/login", "{\"username\":\"ada\",\"password\":\"wrong horse\"}");
+        String wrong #= resp.bodyString();
+        SampleSelfTest.secret(secrets, "wrong horse");
+        int32 s2 = SampleSelfTest.post(client, resp, base + "/login", "{\"username\":\"nobody\",\"password\":\"correct horse\"}");
+        String unknown #= resp.bodyString();
+        SampleSelfTest.check(s == 401 && s2 == 401 && wrong.equals(unknown),
+            "a wrong password and an unknown user answer the same 401 (" + s + " " + s2 + ")");
+
+        ArrayList<String> adaSecret = heap ArrayList<String>();
+        String tokens #= SampleSelfTest.firstLogin(client, resp, base, "ada", adaSecret, secrets);
+        String access #= SampleSelfTest.field(tokens, "access_token");
+        String refresh #= SampleSelfTest.field(tokens, "refresh_token");
+        SampleSelfTest.secret(secrets, access);
+        SampleSelfTest.secret(secrets, refresh);
+        SampleSelfTest.secret(secrets, SampleSelfTest.field(tokens, "id_token"));
+
+        s = SampleSelfTest.getAs(client, resp, base + "/users/me", access);
+        String me #= resp.bodyString();
+        SampleSelfTest.check(s == 200 && me.indexOf("\"id\":\"" + adaId + "\"") >= 0 && me.indexOf("\"username\":\"ada\"") >= 0,
+            "the access token calls /users/me as the application's id (" + s + " " + me + ")");
+
+        s = SampleSelfTest.post(client, resp, base + "/token/refresh", "{\"refresh_token\":\"" + refresh + "\"}");
+        String renewed #= resp.bodyString();
+        String access2 #= SampleSelfTest.field(renewed, "access_token");
+        SampleSelfTest.secret(secrets, access2);
+        SampleSelfTest.check(s == 200 && access2.byteLength() > 0, "refresh answers a new access token (" + s + ")");
+        s = SampleSelfTest.getAs(client, resp, base + "/users/me", access2);
+        SampleSelfTest.check(s == 200, "the refreshed token calls /users/me (got " + s + ")");
+
+        s = SampleSelfTest.postAs(client, resp, base + "/logout", access2, "{\"refresh_token\":\"" + refresh + "\"}");
+        SampleSelfTest.check(s == 204, "logout answers 204 (got " + s + ")");
+        s = SampleSelfTest.post(client, resp, base + "/token/refresh", "{\"refresh_token\":\"" + refresh + "\"}");
+        SampleSelfTest.check(s == 401, "logout revoked the refresh token (got " + s + ")");
+
+        // The second sign-in is challenged for the enrolled TOTP. The code is
+        // the next step's, since this step's was spent on the setup.
+        s = SampleSelfTest.post(client, resp, base + "/login", "{\"username\":\"ada\",\"password\":\"correct horse\"}");
+        String again #= resp.bodyString();
+        String kind #= SampleSelfTest.field(again, "challenge");
+        String h3 #= SampleSelfTest.field(again, "session");
+        SampleSelfTest.check(s == 200 && kind.equals("TOTP"), "login answers challenge-required TOTP (" + s + " " + again + ")");
+        String next #= SampleSelfTest.totp(adaSecret.get(0), 30L);
+        SampleSelfTest.secret(secrets, next);
+        s = SampleSelfTest.post(client, resp, base + "/login/challenge",
+            "{\"session\":\"" + h3 + "\",\"code\":\"" + next + "\"}");
+        String done #= resp.bodyString();
+        String access3 #= SampleSelfTest.field(done, "access_token");
+        SampleSelfTest.secret(secrets, access3);
+        SampleSelfTest.secret(secrets, SampleSelfTest.field(done, "refresh_token"));
+        SampleSelfTest.check(s == 200 && access3.byteLength() > 0, "the challenge endpoint completes the TOTP challenge (" + s + ")");
+        s = SampleSelfTest.post(client, resp, base + "/login/challenge",
+            "{\"session\":\"" + h3 + "\",\"code\":\"" + next + "\"}");
+        SampleSelfTest.check(s == 401, "a used challenge handle answers 401 (got " + s + ")");
+
+        // 403: a signed-in user whose groups map to no role.
+        s = SampleSelfTest.post(client, resp, base + "/users", "{\"username\":\"mallory\",\"password\":\"correct horse\"}");
+        String subject #= SampleSelfTest.subjectOf(pool, "mallory");
+        String confirmCode #= pool.hooks().lastConfirmationCode(subject);
+        SampleSelfTest.secret(secrets, confirmCode);
+        pool.confirm("mallory", confirmCode);
+        pool.removeFromGroup(subject, "members");
+        ArrayList<String> malSecret = heap ArrayList<String>();
+        String malTokens #= SampleSelfTest.firstLogin(client, resp, base, "mallory", malSecret, secrets);
+        String malAccess #= SampleSelfTest.field(malTokens, "access_token");
+        SampleSelfTest.secret(secrets, malAccess);
+        SampleSelfTest.secret(secrets, SampleSelfTest.field(malTokens, "refresh_token"));
+        s = SampleSelfTest.getAs(client, resp, base + "/users/me", malAccess);
+        String forbidden #= resp.bodyString();
+        SampleSelfTest.check(s == 403, "a token whose groups map to no permitted role answers 403 (got " + s + ")");
+        SampleSelfTest.check(forbidden.indexOf("members") < 0 && forbidden.indexOf("user") < 0,
+            "the 403 does not say which role was missing");
+        return;
+    }
+
+    // Plan 6.1.7: no password, code or raw token in what the sample logged.
+    static void noSecretsIn(CapturingAppender sink, ArrayList<String> secrets) {
+        int32 leaks = 0;
+        int32 i = 0;
+        while (i < sink.count()) {
+            int32 j = 0;
+            while (j < secrets.count()) {
+                String needle = secrets.get(j);
+                if (needle.byteLength() >= 6 && sink.get(i).indexOf(needle) >= 0) {
+                    System.stdout.println("  a log line carries a secret: " + sink.get(i));
+                    leaks = leaks + 1;
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        SampleSelfTest.check(sink.count() > 0, "the security log captured the refusals (" + sink.count() + " lines)");
+        SampleSelfTest.check(leaks == 0, "no password, code or raw token in the captured log (" + leaks + ")");
+        return;
     }
 
     // One request over a fresh socket, `Connection: close`; the whole response.
@@ -191,7 +370,7 @@ public final class SampleSelfTest {
         return;
     }
 
-    static async int32 contract(int32 port, MemoryUserPool pool, WebServer web) {
+    static async int32 contract(int32 port, MemoryUserPool pool, WebServer web, ArrayList<String> secrets) {
         String base = "http://127.0.0.1:" + port;
         HttpClient client = heap HttpClient();
         ClientResponse resp = heap ClientResponse();
@@ -237,6 +416,8 @@ public final class SampleSelfTest {
         s = SampleSelfTest.get(client, resp, base + "/users/" + id);
         String confirmed #= resp.bodyString();
         SampleSelfTest.check(confirmed.indexOf("\"confirmed\":true") >= 0, "the lookup reports the confirmation");
+
+        SampleSelfTest.security(client, resp, base, pool, id, secrets);
 
         // The WebSocket phase (spec §6.7): a subscriber on /events hears every
         // registration, decoded as JSON over its message, with the pool flat.
@@ -323,28 +504,92 @@ public final class SampleSelfTest {
         return pool.lookupByName(username).subject();
     }
 
-    /** One full run: an app, a server on an ephemeral port, the contract, a shutdown. */
+    /** One full run: an app over a fresh memory pool, a server on an ephemeral port, the contract, a shutdown. */
     static void once() {
-        RegisterApp app = heap RegisterApp();
-        MemoryUserPool pool = app.users();
+        MemoryUserPool pool = heap MemoryUserPool();
+        pool.requireTotp(true);
+        RegisterApp app = heap RegisterApp(pool);
+        CapturingAppender sink = heap CapturingAppender();
+        Logger audit = heap Logger("register-user.security", Level.INFO, heap JsonlEncoder(), sink);
+        app.auditTo(audit);
+        ArrayList<String> secrets = heap ArrayList<String>();
+        SampleSelfTest.secret(secrets, "correct horse");
         scope {
             WebServer web #= RegisterApp.server("127.0.0.1:0", app);
             int32 port = web.port();
             Task<int32> sv = spawn serve(web);
-            Task<int32> tc = spawn contract(port, pool, web);
+            Task<int32> tc = spawn contract(port, pool, web, secrets);
             SampleSelfTest.check(await tc == 1, "the contract ran to the end");
             web.shutdown(Duration.ofSeconds(2));
             SampleSelfTest.check(await sv == 1, "the accept loop exited");
         }
+        SampleSelfTest.noSecretsIn(sink, secrets);
         return;
     }
 
-    public static int32 run() {
+    // Plan 6.1.4 and spec §11.8, in the test profile: the selector picks the
+    // memory driver with identity.provider unset and the app over it starts,
+    // and a driver without TOTP refuses startup.
+    static void startup() {
+        IdentitySelector sel = IdentitySelector.__cajeta_inject();
+        SampleSelfTest.check(sel.provider().equals("memory"), "the test profile selects the memory driver unset");
+        RegisterApp chosen #= RegisterApp.select();
+        WebServer web #= RegisterApp.server("127.0.0.1:0", chosen);
+        SampleSelfTest.check(web.port() > 0, "the app over the selected driver starts");
+
+        String[] noTotp = [IdentityCapability.CONFIRMATION(), IdentityCapability.GROUPS(),
+            IdentityCapability.REFRESH(), IdentityCapability.REVOCATION()];
+        MemoryUserPool stub #= MemoryUserPool.declaring(noTotp);
+        RegisterApp lacking = heap RegisterApp(stub);
+        String why = "";
+        try {
+            WebServer refused #= RegisterApp.server("127.0.0.1:0", lacking);
+        } catch (SecurityException e) {
+            why = "" + e.getMessage();
+        }
+        SampleSelfTest.check(why.indexOf("identity.totp") >= 0, "a driver without TOTP refuses startup (" + why + ")");
+        return;
+    }
+
+    // Plan 6.1.5 and spec §11.8: the production build refuses to start until
+    // a provider is named.
+    static void production(String binary) {
+        String[] argv = heap String[2];
+        argv[0] = "" + binary;
+        argv[1] = "127.0.0.1:0";
+        String[] env = heap String[1];
+        env[0] = "PATH=/usr/bin:/bin";
+        Command cmd = heap Command(#argv);
+        cmd.environment(#env);
+        cmd.captureStdout();
+        cmd.captureStderr();
+        cmd.timeoutMillis(20000L);
+        ProcessResult r #= cmd.run();
+        String out = "";
+        if (r.stdout() != null) {
+            out = out + Bytes.toString(r.stdout()[0:(int32) r.stdout().count()]);
+        }
+        if (r.stderr() != null) {
+            out = out + Bytes.toString(r.stderr()[0:(int32) r.stderr().count()]);
+        }
+        SampleSelfTest.check(r.launched() && !r.timedOut() && r.code() != 0 && out.indexOf("identity.provider") >= 0,
+            "the production build refuses to start with no provider named (exit " + r.code() + ": " + out + ")");
+        return;
+    }
+
+    public static int32 run(String[] args) {
         System.stdout.println("=== register-user self-test ===");
+        if (args.count() > 0) {
+            SampleSelfTest.production(args[0]);
+        } else {
+            SampleSelfTest.check(false, "the self-test is handed the production build to run");
+        }
+        SampleSelfTest.startup();
         SampleSelfTest.once();
         int64 live = Cajeta.liveCount();
         SampleSelfTest.once();
         int64 after = Cajeta.liveCount();
+
         SampleSelfTest.check(after == live, "the live count is equal across a whole run (" + (after - live)
             + "); it is blind to arrays, which the pool counters cover");
         System.stdout.println("register-user: " + (SampleSelfTest.checks - SampleSelfTest.failures)

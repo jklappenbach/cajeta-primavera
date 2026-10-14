@@ -1,11 +1,29 @@
 package dev.cajeta.sample.register;
 
 import cajeta.lang.String;
+import dev.cajeta.cloud.identity.Challenge;
+import dev.cajeta.cloud.identity.ChallengeAnswer;
+import dev.cajeta.cloud.identity.ChallengeKind;
+import dev.cajeta.cloud.identity.IdentityCapability;
 import dev.cajeta.cloud.identity.IdentityException;
+import dev.cajeta.cloud.identity.IdentitySelectionException;
+import dev.cajeta.cloud.identity.IdentitySelector;
 import dev.cajeta.cloud.identity.MemoryUserPool;
 import dev.cajeta.cloud.identity.RegistrationResult;
+import dev.cajeta.cloud.identity.SignInResult;
+import dev.cajeta.cloud.identity.Tokens;
+import dev.cajeta.cloud.identity.TotpEnrollment;
 import dev.cajeta.cloud.identity.User;
 import dev.cajeta.cloud.identity.UserPool;
+import dev.cajeta.logging.Level;
+import dev.cajeta.logging.LogRecord;
+import dev.cajeta.logging.Logged;
+import dev.cajeta.logging.Logger;
+import dev.cajeta.primavera.security.ChallengeHandles;
+import dev.cajeta.primavera.security.PendingChallenge;
+import dev.cajeta.primavera.security.Policy;
+import dev.cajeta.primavera.security.SecurityContext;
+import dev.cajeta.primavera.security.WebSecurity;
 import dev.cajeta.primavera.identity.MemoryUserDirectory;
 import dev.cajeta.primavera.identity.UserDirectory;
 import dev.cajeta.primavera.identity.UserRecord;
@@ -18,6 +36,7 @@ import dev.cajeta.primavera.web.RequestView;
 import dev.cajeta.primavera.web.Response;
 import dev.cajeta.primavera.web.WebServer;
 import dev.cajeta.primavera.web.WebServerBuilder;
+import dev.cajeta.primavera.web.WebSocketEndpoints;
 
 /**
  * The registration sample (primavera-web spec §5): register, look up and
@@ -27,39 +46,97 @@ import dev.cajeta.primavera.web.WebServerBuilder;
  * `POST /users` reads JSON or protobuf by `Content-Type` and answers in the
  * type `Accept` prefers (§7.7); the codecs are the components the build
  * compiled in ({@link SampleCodecs}).
+ *
+ * The security phase (§8): every route has a rule, a new user joins the
+ * `members` group, which grants the `user` role `GET /users/me` needs, and
+ * every sign-in needs TOTP. `POST /login` answers tokens or a challenge
+ * whose handle stands for the provider's session, and
+ * `POST /login/challenge` enrols TOTP or answers it. Refusals are logged
+ * with their reason and never with a credential.
  */
+@Logged
 public final class RegisterApp {
 
-    MemoryUserPool pool;
+    UserPool pool;
     MemoryUserDirectory directory;
     Events feed;
+    ChallengeHandles handles;
+    Logger audit;
 
-    public RegisterApp() {
-        this.pool = heap MemoryUserPool();
+    /** An app over `pool`, which it borrows when lent and owns when handed over. */
+    public RegisterApp(UserPool pool) {
+        this.pool #= pool;
         this.directory = heap MemoryUserDirectory();
         this.feed = heap Events();
+        this.handles = heap ChallengeHandles();
+        this.audit = null;
         return;
     }
+
+    /**
+     * The app over the identity provider the build selects (identity spec
+     * §9): `identity.provider`, or the memory driver unset in a test or dev
+     * profile. Elsewhere an unnamed provider throws
+     * IdentitySelectionException. The memory driver is told to require TOTP,
+     * as a real pool is configured to.
+     */
+    public static #RegisterApp select() {
+        IdentitySelector sel = IdentitySelector.__cajeta_inject();
+        if (sel.provider().equals("memory")) {
+            MemoryUserPool memory = MemoryUserPool.__cajeta_inject();
+            memory.requireTotp(true);
+        }
+        RegisterApp app = heap RegisterApp(sel.pool());
+        return #app;
+    }
+
+    /** Security refusals and sign-in failures go to `logger`, which must outlive the app. */
+    public void auditTo(Logger logger) {
+        this.audit #= logger;
+        return;
+    }
+
+    /** The group every new user joins; it grants the `user` role. */
+    public static String MEMBERS() { return "members"; }
 
     /** The `/events` feed a registration is announced on. */
     public Events events() { return this.feed; }
 
-    public MemoryUserPool users() { return this.pool; }
+    public UserPool users() { return this.pool; }
 
     public MemoryUserDirectory records() { return this.directory; }
 
-    /** The provider name the memory driver's subjects are linked under. */
-    public static String PROVIDER() { return "memory"; }
-
-    /** Registers the sample's endpoints over `pool` and `dir` on `api`; registrations go to `events`. */
-    public static void routes(Endpoints api, UserPool pool, UserDirectory dir, Events events) {
+    /** Registers the sample's endpoints on `api` and each one's rule on `sec`. */
+    public static void routes(Endpoints api, WebSecurity sec, RegisterApp app) {
+        UserPool pool = app.users();
+        MemoryUserDirectory dir = app.records();
+        Events events = app.events();
+        ChallengeHandles handles = app.handles;
+        Logger audit = app.audit;
         Codecs<Signup> in #= SampleCodecs.requests();
         Codecs<Account> out #= SampleCodecs.responses();
         api.codec("POST", "/users", heap CodecEndpoint<Signup, Account>(#in, #out,
             (RequestView q, Signup s, Reply<Account> r) -> RegisterApp.register(pool, dir, events, s, r)));
+        sec.rule(api.last(), Policy.anyone());
+        api.route("GET", "/users/me", (RequestView q, Response r) -> RegisterApp.me(dir, r));
+        sec.rule(api.last(), Policy.role("user"));
         api.route("GET", "/users/{id}", (RequestView q, Response r) -> RegisterApp.lookup(pool, dir, q, r));
+        sec.rule(api.last(), Policy.anyone());
         api.json("POST", "/users/{id}/confirm",
             (RequestView q, JsonBody b, Response r) -> RegisterApp.confirm(pool, dir, q, b, r));
+        sec.rule(api.last(), Policy.anyone());
+        api.json("POST", "/login",
+            (RequestView q, JsonBody b, Response r) -> RegisterApp.login(pool, handles, audit, b, r));
+        sec.rule(api.last(), Policy.anyone());
+        api.json("POST", "/login/challenge",
+            (RequestView q, JsonBody b, Response r) -> RegisterApp.challenge(pool, handles, audit, b, r));
+        sec.rule(api.last(), Policy.anyone());
+        api.json("POST", "/token/refresh",
+            (RequestView q, JsonBody b, Response r) -> RegisterApp.refresh(pool, audit, b, r));
+        sec.rule(api.last(), Policy.anyone());
+        api.json("POST", "/logout",
+            (RequestView q, JsonBody b, Response r) -> RegisterApp.logout(pool, audit, b, r));
+        sec.rule(api.last(), Policy.authenticated());
         return;
     }
 
@@ -100,7 +177,9 @@ public final class RegisterApp {
             return;
         }
         String subject #= reg.subject();
-        UserRecord rec #= dir.create(username, RegisterApp.PROVIDER(), subject);
+        pool.addToGroup(subject, RegisterApp.MEMBERS());
+        String provider #= pool.capabilities().adapterName();
+        UserRecord rec #= dir.create(username, provider, subject);
         Account a = heap Account();
         a.id = rec.id();
         a.username = rec.username();
@@ -150,31 +229,274 @@ public final class RegisterApp {
         return;
     }
 
+    // --- the security phase (spec §8) -----------------------------------
+
+    // The audit logger, or this class's own.
+    static void note(Logger audit, String what, String reason) {
+        Logger out = log;
+        if (audit != null) {
+            out = audit;
+        }
+        if (out.enabled(Level.WARN)) {
+            LogRecord rec #= out.event(Level.WARN, what);
+            rec.str("reason", reason);
+            out.emit(#rec);
+        }
+        return;
+    }
+
+    // A refused identity call: a status by kind and a body that never says
+    // which credential failed (§8.7); the reason goes to the audit log.
+    // False when the failure is not the caller's, so the handler rethrows.
+    static boolean refuse(Logger audit, IdentityException e, Response r) {
+        int32 k = e.kind();
+        if (k == IdentityException.NOT_CONFIRMED()) {
+            RegisterApp.note(audit, "sign-in refused", e.getMessage());
+            r.error(403, "the account is not confirmed");
+            return true;
+        }
+        if (k == IdentityException.PASSWORD_RESET_REQUIRED()) {
+            RegisterApp.note(audit, "sign-in refused", e.getMessage());
+            r.error(403, "the password must be reset");
+            return true;
+        }
+        if (k == IdentityException.LOCKED()) {
+            RegisterApp.note(audit, "sign-in refused", e.getMessage());
+            r.header("Retry-After", "" + e.retryAfter());
+            r.error(429, "too many attempts");
+            return true;
+        }
+        if (k == IdentityException.USER_NOT_FOUND() || k == IdentityException.INVALID_CREDENTIALS()
+                || k == IdentityException.INVALID_CODE() || k == IdentityException.CODE_EXPIRED()
+                || k == IdentityException.INVALID_TOKEN()) {
+            RegisterApp.note(audit, "sign-in refused", e.getMessage());
+            r.error(401, "sign-in failed");
+            return true;
+        }
+        return false;
+    }
+
+    static void tokens(Tokens t, Response r) {
+        String access #= t.accessToken();
+        String id #= t.idToken();
+        r.json(200);
+        r.field("token_type", "Bearer");
+        r.field("access_token", access);
+        r.field("id_token", id);
+        r.field("expires_at", t.accessExpiresAt());
+        if (t.hasRefreshToken()) {
+            String refresh #= t.refreshToken();
+            r.field("refresh_token", refresh);
+        }
+        r.end();
+        return;
+    }
+
+    // Tokens, or a challenge under a fresh handle for the provider's session.
+    static void answer(ChallengeHandles handles, String username, SignInResult s, Response r) {
+        if (s.isTokens()) {
+            RegisterApp.tokens(s.tokens(), r);
+            return;
+        }
+        Challenge c = s.challenge();
+        String session #= c.session();
+        String handle #= handles.issue(session, username, c.kind());
+        String kind #= ChallengeKind.name(c.kind());
+        r.json(200).field("challenge", kind).field("session", handle).end();
+        return;
+    }
+
+    static #SignInResult trySignIn(UserPool pool, Logger audit, String username, String password, Response r) {
+        try {
+            return pool.authenticator().signIn(username, password);
+        } catch (IdentityException e) {
+            if (!RegisterApp.refuse(audit, e, r)) {
+                throw e;
+            }
+            return null;
+        }
+    }
+
+    /** `POST /login`: tokens, or a challenge and its handle; one 401 for a wrong password and an unknown user. */
+    public static void login(UserPool pool, ChallengeHandles handles, Logger audit, JsonBody b, Response r) {
+        if (!b.isString("username") || !b.isString("password")) {
+            r.error(400, "username and password are required");
+            return;
+        }
+        String username #= b.stringCopy("username");
+        String password #= b.stringCopy("password");
+        SignInResult s #= RegisterApp.trySignIn(pool, audit, username, password, r);
+        if (s == null) {
+            return;
+        }
+        RegisterApp.answer(handles, username, s, r);
+        return;
+    }
+
+    static #TotpEnrollment tryEnroll(UserPool pool, Logger audit, String session, Response r) {
+        try {
+            return pool.authenticator().enrollTotpForChallenge(session);
+        } catch (IdentityException e) {
+            if (!RegisterApp.refuse(audit, e, r)) {
+                throw e;
+            }
+            return null;
+        }
+    }
+
+    static #SignInResult tryRespond(UserPool pool, Logger audit, String session, int32 kind, ChallengeAnswer a,
+                                    Response r) {
+        try {
+            return pool.authenticator().respond(session, kind, a);
+        } catch (IdentityException e) {
+            if (!RegisterApp.refuse(audit, e, r)) {
+                throw e;
+            }
+            return null;
+        }
+    }
+
     /**
-     * The sample's server on `addr` over `app`: its endpoints, `/events`,
-     * and every body content-coded when the client accepts a coding, so
-     * each pairing is visible on its small responses.
+     * `POST /login/challenge`: `{"session"}` alone starts TOTP enrolment for
+     * an MFA_SETUP challenge and answers the secret under a fresh handle;
+     * with `"code"` it answers the challenge. A handle is good once.
+     */
+    public static void challenge(UserPool pool, ChallengeHandles handles, Logger audit, JsonBody b, Response r) {
+        if (!b.isString("session")) {
+            r.error(400, "session is required");
+            return;
+        }
+        String handle #= b.stringCopy("session");
+        PendingChallenge p #= handles.take(handle);
+        if (p == null) {
+            RegisterApp.note(audit, "challenge refused", "the handle is unknown, used or expired");
+            r.error(401, "sign-in failed");
+            return;
+        }
+        if (!b.isString("code")) {
+            if (p.kind() != ChallengeKind.MFA_SETUP()) {
+                r.error(400, "code is required");
+                return;
+            }
+            TotpEnrollment en #= RegisterApp.tryEnroll(pool, audit, p.session(), r);
+            if (en == null) {
+                return;
+            }
+            String next #= en.session();
+            String fresh #= handles.issue(next, p.username(), ChallengeKind.MFA_SETUP());
+            String secret #= en.secret();
+            String uri #= en.uri();
+            r.json(200).field("challenge", "MFA_SETUP").field("session", fresh)
+                .field("secret", secret).field("uri", uri).end();
+            return;
+        }
+        String code #= b.stringCopy("code");
+        ChallengeAnswer a #= ChallengeAnswer.code(code);
+        SignInResult s #= RegisterApp.tryRespond(pool, audit, p.session(), p.kind(), a, r);
+        if (s == null) {
+            return;
+        }
+        RegisterApp.answer(handles, p.username(), s, r);
+        return;
+    }
+
+    static #Tokens tryRefresh(UserPool pool, Logger audit, String refresh, Response r) {
+        try {
+            return pool.authenticator().refresh(refresh);
+        } catch (IdentityException e) {
+            if (!RegisterApp.refuse(audit, e, r)) {
+                throw e;
+            }
+            return null;
+        }
+    }
+
+    /** `POST /token/refresh`: new tokens for a live refresh token, else 401. */
+    public static void refresh(UserPool pool, Logger audit, JsonBody b, Response r) {
+        if (!b.isString("refresh_token")) {
+            r.error(400, "refresh_token is required");
+            return;
+        }
+        String refresh #= b.stringCopy("refresh_token");
+        Tokens t #= RegisterApp.tryRefresh(pool, audit, refresh, r);
+        if (t == null) {
+            return;
+        }
+        RegisterApp.tokens(t, r);
+        return;
+    }
+
+    /** `POST /logout`: revokes the refresh token's sign-in; 204. */
+    public static void logout(UserPool pool, Logger audit, JsonBody b, Response r) {
+        if (!b.isString("refresh_token")) {
+            r.error(400, "refresh_token is required");
+            return;
+        }
+        String refresh #= b.stringCopy("refresh_token");
+        try {
+            pool.authenticator().signOut(refresh);
+        } catch (IdentityException e) {
+            if (!RegisterApp.refuse(audit, e, r)) {
+                throw e;
+            }
+            return;
+        }
+        r.empty(204);
+        return;
+    }
+
+    /** `GET /users/me`: the signed-in user, by the application's id. */
+    public static void me(UserDirectory dir, Response r) {
+        SecurityContext who = SecurityContext.current();
+        UserRecord rec #= dir.find(who.principal());
+        if (rec == null) {
+            r.error(404, "no such user");
+            return;
+        }
+        r.json(200).field("id", rec.id()).field("username", rec.username()).end();
+        return;
+    }
+
+    /**
+     * The sample's server on `addr` over `app`: its endpoints and their
+     * rules, `/events`, and every body content-coded when the client accepts
+     * a coding, so each pairing is visible on its small responses. Startup
+     * fails when the identity driver lacks TOTP or groups (§8.5).
      */
     public static #WebServer server(String addr, RegisterApp app) {
         Endpoints api = heap Endpoints();
-        RegisterApp.routes(api, app.users(), app.records(), app.events());
+        WebSecurity sec = heap WebSecurity(app.users(), app.records());
+        sec.grant(RegisterApp.MEMBERS(), "user");
+        sec.requires(IdentityCapability.TOTP()).requires(IdentityCapability.GROUPS());
+        if (app.audit != null) {
+            sec.auditTo(app.audit);
+        }
+        RegisterApp.routes(api, sec, app);
+        WebSocketEndpoints ws #= Events.sockets();
+        sec.rule(ws.last(), Policy.anyone());
         WebServerBuilder b #= WebServer.builder();
         b.bind(addr);
         b.compressAbove(0);
         b.endpoints(#api);
-        b.websockets(Events.sockets());
+        b.websockets(#ws);
+        b.guard(#sec);
         WebServer web #= b.build();
         app.events().attach(web.connections());
         return #web;
     }
 
-    /** Serves the sample on `addr` until the process ends. */
+    /** Serves the sample on `addr` until the process ends; 2 when no identity provider can be selected. */
     public static int32 main(String[] args) {
-        RegisterApp app = heap RegisterApp();
         String addr = args.count() > 0 ? args[0] : "127.0.0.1:8080";
-        WebServer web #= RegisterApp.server(addr, app);
-        System.stdout.println("register-user listening on " + addr);
-        web.serve();
+        try {
+            RegisterApp app #= RegisterApp.select();
+            WebServer web #= RegisterApp.server(addr, app);
+            System.stdout.println("register-user listening on " + addr);
+            web.serve();
+        } catch (IdentitySelectionException e) {
+            System.stdout.println("register-user refuses to start: " + e.getMessage());
+            return 2;
+        }
         return 0;
     }
 }

@@ -1,0 +1,114 @@
+package dev.cajeta.primavera.security;
+
+import cajeta.lang.String;
+
+/**
+ * An authorization rule (primavera-spec §8, primavera-web spec §8.3): a
+ * tree of AND, OR and veto over role and authentication tests. A route with
+ * no policy is refused at startup, so the algebra has no implicit allow.
+ * Role names compare as bytes, never through a locale (commitment 6).
+ *
+ * ```cajeta
+ * Policy admin #= Policy.role("admin");
+ * Policy p #= Policy.veto(Policy.any(Policy.role("user"), #admin), Policy.role("suspended"));
+ * ```
+ */
+public final class Policy {
+
+    static int32 ANYONE()        { return 0; }
+    static int32 AUTHENTICATED() { return 1; }
+    static int32 ROLE()          { return 2; }
+    static int32 ALL()           { return 3; }
+    static int32 ANY()           { return 4; }
+    static int32 VETO()          { return 5; }
+    static int32 NOBODY()        { return 6; }
+
+    int32 op;
+    String name;
+    Policy left;
+    Policy right;
+
+    Policy(int32 op) {
+        this.op = op;
+        this.name = null;
+        this.left = null;
+        this.right = null;
+        return;
+    }
+
+    /** Every request, signed in or not: a public route, stated as one. */
+    public static #Policy anyone() { return heap Policy(Policy.ANYONE()); }
+
+    /** No request at all. */
+    public static #Policy nobody() { return heap Policy(Policy.NOBODY()); }
+
+    /** Any verified principal. */
+    public static #Policy authenticated() { return heap Policy(Policy.AUTHENTICATED()); }
+
+    /** A principal holding `role`, which the group-to-role map grants. */
+    public static #Policy role(String role) {
+        Policy p = heap Policy(Policy.ROLE());
+        p.name #= role.substring(0, role.byteLength());
+        return #p;
+    }
+
+    /** Both `a` and `b`. */
+    public static #Policy all(#Policy a, #Policy b) {
+        Policy p = heap Policy(Policy.ALL());
+        p.left #= a;
+        p.right #= b;
+        return #p;
+    }
+
+    /** Either `a` or `b`. */
+    public static #Policy any(#Policy a, #Policy b) {
+        Policy p = heap Policy(Policy.ANY());
+        p.left #= a;
+        p.right #= b;
+        return #p;
+    }
+
+    /** `base`, except that `veto` denies whenever it holds, whatever `base` says. */
+    public static #Policy veto(#Policy base, #Policy veto) {
+        Policy p = heap Policy(Policy.VETO());
+        p.left #= base;
+        p.right #= veto;
+        return #p;
+    }
+
+    /** Whether the request `ctx` describes may proceed. */
+    public boolean admits(SecurityContext ctx) {
+        if (this.op == Policy.ANYONE()) {
+            return true;
+        }
+        if (this.op == Policy.NOBODY()) {
+            return false;
+        }
+        if (this.op == Policy.AUTHENTICATED()) {
+            return ctx.isAuthenticated();
+        }
+        if (this.op == Policy.ROLE()) {
+            return ctx.hasRole(this.name);
+        }
+        if (this.op == Policy.ALL()) {
+            return this.left.admits(ctx) && this.right.admits(ctx);
+        }
+        if (this.op == Policy.ANY()) {
+            return this.left.admits(ctx) || this.right.admits(ctx);
+        }
+        return this.left.admits(ctx) && !this.right.admits(ctx);
+    }
+
+    /** The rule as text, for startup messages. */
+    public #String describe() {
+        String out = "";
+        if (this.op == Policy.ANYONE()) { out = "anyone"; }
+        if (this.op == Policy.NOBODY()) { out = "nobody"; }
+        if (this.op == Policy.AUTHENTICATED()) { out = "authenticated"; }
+        if (this.op == Policy.ROLE()) { out = "role(" + this.name + ")"; }
+        if (this.op == Policy.ALL()) { out = "all(" + this.left.describe() + ", " + this.right.describe() + ")"; }
+        if (this.op == Policy.ANY()) { out = "any(" + this.left.describe() + ", " + this.right.describe() + ")"; }
+        if (this.op == Policy.VETO()) { out = "veto(" + this.left.describe() + ", " + this.right.describe() + ")"; }
+        return #out;
+    }
+}

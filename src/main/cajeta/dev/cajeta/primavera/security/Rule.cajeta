@@ -1,0 +1,20 @@
+package dev.cajeta.primavera.security;
+
+import cajeta.lang.String;
+import dev.cajeta.primavera.web.RouteId;
+
+/** One route's policy, keyed by the route's identity token. */
+final class Rule {
+    int32 token;
+    String route;
+    Policy policy;
+    boolean placed;
+
+    Rule(RouteId id, #Policy policy) {
+        this.token = id.token();
+        this.route #= id.describe();
+        this.policy #= policy;
+        this.placed = false;
+        return;
+    }
+}

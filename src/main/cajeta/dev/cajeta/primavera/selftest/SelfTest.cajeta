@@ -325,6 +325,7 @@ public class SelfTest {
         WsSelfTest.add(t);
         CodecSelfTest.add(t);
         IdentitySelfTest.add(t);
+        SecuritySelfTest.add(t);
 
         return t.summary();
     }

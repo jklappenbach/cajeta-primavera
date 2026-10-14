@@ -25,10 +25,29 @@ public final class Endpoints {
     }
 
     void add(String method, String pattern, #Endpoint e) {
+        e.id #= heap RouteId(method, pattern);
+        this.addWith(method, pattern, #e);
+        return;
+    }
+
+    void addWith(String method, String pattern, #Endpoint e) {
         this.router.route(method, pattern, (HttpRequest q, HttpResponse r) -> {
             return;
         });
         this.list.add(#e);
+        return;
+    }
+
+    // A route whose identity was handed out before it was installed: a
+    // WebSocket path's, minted when the path was declared. The path keeps
+    // the identity and this endpoint borrows it; the server owns both.
+    void routeAs(RouteId id, (RequestView, Response) -> void handler) {
+        Endpoint e = heap Endpoint(BodyMode.NONE());
+        e.plain #= handler;
+        String method = "" + id.method();
+        String pattern = "" + id.pattern();
+        e.id #= id;
+        this.addWith(method, pattern, #e);
         return;
     }
 
@@ -78,6 +97,12 @@ public final class Endpoints {
 
     /** How many endpoints are registered. */
     public int32 count() { return this.list.count(); }
+
+    /** The identity of the endpoint registered last, for a security rule. */
+    public RouteId last() { return this.list.get(this.list.count() - 1).id; }
+
+    /** The identity of endpoint `i`, in registration order, as {@link RouteMatch#index} names it. */
+    public RouteId routeAt(int32 i) { return this.list.get(i).id; }
 
     Endpoint at(int32 i) { return this.list.get(i); }
 }

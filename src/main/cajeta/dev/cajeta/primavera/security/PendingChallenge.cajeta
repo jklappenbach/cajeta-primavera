@@ -1,0 +1,29 @@
+package dev.cajeta.primavera.security;
+
+import cajeta.lang.String;
+
+/** What a challenge handle stands for: the provider's session, the user and the challenge kind. */
+public final class PendingChallenge {
+    String handleText;
+    String sessionText;
+    String userName;
+    int32 kindCode;
+    int64 expiresMillis;
+
+    PendingChallenge(String handle, String session, String username, int32 kind, int64 expires) {
+        this.handleText = "" + handle;
+        this.sessionText = "" + session;
+        this.userName = "" + username;
+        this.kindCode = kind;
+        this.expiresMillis = expires;
+        return;
+    }
+
+    /** The provider's session handle, which never leaves the server. */
+    public String session() { return this.sessionText; }
+
+    public String username() { return this.userName; }
+
+    /** The identity port's `ChallengeKind`. */
+    public int32 kind() { return this.kindCode; }
+}

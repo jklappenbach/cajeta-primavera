@@ -11,6 +11,7 @@ final class Endpoint {
     (RequestView, Slice<int8>, Response) -> void window;
     BodyHandler owned;
     CodedHandler coded;
+    RouteId id;
 
     Endpoint(int32 mode) {
         this.mode = mode;
@@ -19,6 +20,7 @@ final class Endpoint {
         this.window = null;
         this.owned = null;
         this.coded = null;
+        this.id = null;
         return;
     }
 }

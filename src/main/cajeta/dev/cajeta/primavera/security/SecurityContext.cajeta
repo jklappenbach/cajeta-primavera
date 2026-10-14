@@ -1,0 +1,94 @@
+package dev.cajeta.primavera.security;
+
+import cajeta.aot.Component;
+import cajeta.collection.ArrayList;
+import cajeta.lang.String;
+import dev.cajeta.cloud.identity.Claims;
+
+/**
+ * Who is making the request (primavera-web spec §8.2): the principal, which
+ * is the application's user id from the user directory and never the
+ * provider's subject, the verified claims, and the roles the principal's
+ * groups map to. Authentication provides one to every request it admits, an
+ * anonymous one when there is no bearer token. The request scope it lives in
+ * is the request fiber's, so a structured child sees it and a detached task
+ * does not.
+ *
+ * ```cajeta
+ * SecurityContext who = SecurityContext.current();
+ * if (who.hasRole("admin")) { ... }
+ * ```
+ */
+@Component(scope = "Request")
+public final class SecurityContext {
+
+    String principalId;
+    String userName;
+    String subjectId;
+    Claims verified;
+    ArrayList<String> granted;
+
+    SecurityContext(int32 anonymous) {
+        this.principalId = null;
+        this.userName = null;
+        this.subjectId = null;
+        this.verified = null;
+        this.granted = heap ArrayList<String>();
+        return;
+    }
+
+    /** A context with no principal, as a request without a token gets. */
+    public static #SecurityContext anonymous() {
+        SecurityContext c = heap SecurityContext(0);
+        return #c;
+    }
+
+    /** A context for `principal` holding `roles`, for testing a policy or a handler without a token. */
+    public static #SecurityContext of(String principal, String[] roles) {
+        SecurityContext c = heap SecurityContext(0);
+        c.principalId = "" + principal;
+        int32 i = 0;
+        while (i < roles.count()) {
+            String r = "" + roles[i];
+            c.granted.add(#r);
+            i = i + 1;
+        }
+        return #c;
+    }
+
+    /** The current request's context; outside a secured request this throws NotProvidedException. */
+    public static SecurityContext current() {
+        return SecurityContext.__cajeta_inject();
+    }
+
+    /** True when a verified token named a known user. */
+    public boolean isAuthenticated() { return this.principalId != null; }
+
+    /** The application's user id, or null for an anonymous request. */
+    public String principal() { return this.principalId; }
+
+    /** The username the directory holds for the principal, or null. */
+    public String username() { return this.userName; }
+
+    /** The provider's subject the token carried, or null. */
+    public String subject() { return this.subjectId; }
+
+    /** The verified access-token claims, or null for an anonymous request. */
+    public Claims claims() { return this.verified; }
+
+    /** Whether the principal's groups grant `role`, compared as bytes. */
+    public boolean hasRole(String role) {
+        int32 i = 0;
+        while (i < this.granted.count()) {
+            if (this.granted.get(i).equals(role)) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    public int32 roleCount() { return this.granted.count(); }
+
+    public String roleAt(int32 i) { return this.granted.get(i); }
+}

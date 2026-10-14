@@ -16,8 +16,11 @@ Each request runs a pipeline of stages under a fresh request scope:
 | binding | routed | bound | indexes a JSON body in place for a JSON endpoint |
 | handler | bound | bound | calls the endpoint with its bound values |
 
-A `WebServerBuilder` held in a local adds stages ahead of these with `stage(...)`.
-Authentication joins with the security phase. A
+A server built with a guard (`guard(...)`, see [Security](Security.md)) runs
+authentication and authorization between routing and binding, and binding
+then consumes `authorized`.
+
+A `WebServerBuilder` held in a local adds stages ahead of these with `stage(...)`. A
 stage that throws an `HttpException`, such as one of the
 `dev.cajeta.http.status` catalogue, ends the request with that status and an
 empty body. Anything the handler already wrote is discarded.
@@ -174,5 +177,7 @@ subject as a link. `POST /users` takes JSON or protobuf (`cajeta-codec`'s
 and codes every response the client accepts a coding for. The test profile
 adds an `x-reverse` coding that nothing else knows about, and the self-test
 negotiates it both ways. Its `/events` WebSocket path announces each
-registration to every subscriber. `cajeta test` at the repo root runs it
-after the library's own tests.
+registration to every subscriber. Its security phase signs users in with
+TOTP and serves `GET /users/me` to the `user` role (see
+[Security](Security.md)). `cajeta test` at the repo root runs it after the
+library's own tests.

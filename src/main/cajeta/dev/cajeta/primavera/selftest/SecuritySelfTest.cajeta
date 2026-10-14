@@ -1,0 +1,382 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.lang.String;
+import cajeta.time.Duration;
+import dev.cajeta.cloud.identity.IdentityCapability;
+import dev.cajeta.cloud.identity.ManualTimeSource;
+import dev.cajeta.cloud.identity.MemoryUserPool;
+import dev.cajeta.cloud.identity.RegistrationResult;
+import dev.cajeta.cloud.identity.SignInResult;
+import dev.cajeta.http.ClientRequest;
+import dev.cajeta.http.ClientResponse;
+import dev.cajeta.http.client.HttpClient;
+import dev.cajeta.logging.CapturingAppender;
+import dev.cajeta.logging.JsonlEncoder;
+import dev.cajeta.logging.Level;
+import dev.cajeta.logging.Logger;
+import dev.cajeta.primavera.identity.MemoryUserDirectory;
+import dev.cajeta.primavera.identity.UserRecord;
+import dev.cajeta.primavera.pipeline.BufferSource;
+import dev.cajeta.primavera.pipeline.Kind;
+import dev.cajeta.primavera.pipeline.Pipeline;
+import dev.cajeta.primavera.pipeline.PipelineException;
+import dev.cajeta.primavera.security.ChallengeHandles;
+import dev.cajeta.primavera.security.PendingChallenge;
+import dev.cajeta.primavera.security.Policy;
+import dev.cajeta.primavera.security.SecurityContext;
+import dev.cajeta.primavera.security.SecurityException;
+import dev.cajeta.primavera.security.WebSecurity;
+import dev.cajeta.primavera.web.BindingStage;
+import dev.cajeta.primavera.web.Connection;
+import dev.cajeta.primavera.web.Endpoints;
+import dev.cajeta.primavera.web.JsonBody;
+import dev.cajeta.primavera.web.RequestView;
+import dev.cajeta.primavera.web.Response;
+import dev.cajeta.primavera.web.RoutingStage;
+import dev.cajeta.primavera.web.WebServer;
+import dev.cajeta.primavera.web.WebServerBuilder;
+import dev.cajeta.primavera.web.WebSocketEndpoints;
+import dev.cajeta.unit.TestRunner;
+
+/**
+ * primavera-web plan 6.1.1, 6.1.3, 6.1.4 and 6.1.6 over the security
+ * package: the policy algebra, a live server's 401, 403 and 200, refusals
+ * that look alike to the client and differ in the log, and startup refusals
+ * for a missing capability and an unruled route.
+ */
+public final class SecuritySelfTest {
+
+    static void addPolicyTests(TestRunner t) {
+        t.test("the policy algebra: roles, AND, OR, veto, and anonymity", () -> {
+            SecurityContext anon #= SecurityContext.anonymous();
+            String[] userRoles = ["user"];
+            SecurityContext user #= SecurityContext.of("u-1", userRoles);
+            String[] bannedRoles = ["user", "banned"];
+            SecurityContext banned #= SecurityContext.of("u-2", bannedRoles);
+            String[] adminRoles = ["admin"];
+            SecurityContext admin #= SecurityContext.of("u-3", adminRoles);
+
+            Policy anyone #= Policy.anyone();
+            Policy nobody #= Policy.nobody();
+            Policy signedIn #= Policy.authenticated();
+            Policy role #= Policy.role("user");
+            SelfTest.req(anyone.admits(anon) && anyone.admits(user), "anyone admits the anonymous and the signed in");
+            SelfTest.req(!nobody.admits(admin), "nobody admits no one");
+            SelfTest.req(!signedIn.admits(anon) && signedIn.admits(admin), "authenticated needs a principal");
+            SelfTest.req(role.admits(user) && !role.admits(admin) && !role.admits(anon), "a role needs the role");
+
+            Policy either #= Policy.any(Policy.role("user"), Policy.role("admin"));
+            Policy both #= Policy.all(Policy.role("user"), Policy.role("admin"));
+            SelfTest.req(either.admits(user) && either.admits(admin) && !either.admits(anon), "OR admits either role");
+            SelfTest.req(!both.admits(user) && !both.admits(admin), "AND needs both");
+
+            Policy vetoed #= Policy.veto(Policy.any(Policy.role("user"), Policy.role("admin")), Policy.role("banned"));
+            SelfTest.req(vetoed.admits(user) && !vetoed.admits(banned), "a veto denies whatever the base allows");
+            String d #= vetoed.describe();
+            SelfTest.req(d.equals("veto(any(role(user), role(admin)), role(banned))"), "a policy describes itself: " + d);
+            String[] upper = ["User"];
+            SecurityContext shouty #= SecurityContext.of("u-4", upper);
+            SelfTest.req(!role.admits(shouty), "role names compare as bytes, not case-folded");
+        });
+    }
+
+    static void me(RequestView q, Response r) {
+        SecurityContext who = SecurityContext.current();
+        r.json(200).field("principal", who.principal()).field("username", who.username())
+            .field("roles", (int64) who.roleCount()).end();
+        return;
+    }
+
+    static void open(RequestView q, Response r) {
+        SecurityContext who = SecurityContext.current();
+        r.json(200).fieldBool("signedIn", who.isAuthenticated()).end();
+        return;
+    }
+
+    // A server over `pool` and `dir`: /open for anyone, /me for role user;
+    // refusals are logged to `audit`.
+    static #WebServer server(MemoryUserPool pool, MemoryUserDirectory dir, Logger audit) {
+        Endpoints api = heap Endpoints();
+        WebSecurity sec = heap WebSecurity(pool, dir);
+        sec.grant("members", "user").auditTo(audit);
+        api.route("GET", "/open", (RequestView q, Response r) -> SecuritySelfTest.open(q, r));
+        sec.rule(api.last(), Policy.anyone());
+        api.route("GET", "/me", (RequestView q, Response r) -> SecuritySelfTest.me(q, r));
+        sec.rule(api.last(), Policy.role("user"));
+        WebServerBuilder b #= WebServer.builder();
+        b.bind("127.0.0.1:0");
+        b.endpoints(#api);
+        b.guard(#sec);
+        return b.build();
+    }
+
+    static async int32 serve(WebServer web) {
+        web.serve();
+        return 1;
+    }
+
+    static int32 get(HttpClient client, ClientResponse resp, String url, String token) {
+        ClientRequest req = heap ClientRequest(url);
+        if (token != null) {
+            req.setHeader("Authorization", "Bearer " + token);
+        }
+        client.send(req, resp);
+        return resp.status();
+    }
+
+    // Registers and confirms `username`, links it in `dir`, and puts it in `group` unless null.
+    static #String enrol(MemoryUserPool pool, MemoryUserDirectory dir, String username, String group) {
+        RegistrationResult reg #= pool.register(username, "correct horse");
+        String subject #= reg.subject();
+        String code #= pool.hooks().lastConfirmationCode(subject);
+        pool.confirm(username, code);
+        if (group != null) {
+            pool.addToGroup(subject, group);
+        }
+        UserRecord rec #= dir.create(username, "memory", subject);
+        String id = "" + rec.id();
+        return #id;
+    }
+
+    static #String accessToken(MemoryUserPool pool, String username) {
+        SignInResult s #= pool.authenticator().signIn(username, "correct horse");
+        return s.tokens().accessToken();
+    }
+
+    static boolean logged(CapturingAppender sink, int32 from, String text) {
+        int32 i = from;
+        while (i < sink.count()) {
+            if (sink.get(i).indexOf(text) >= 0) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    static async int32 drive(int32 port, MemoryUserPool pool, MemoryUserDirectory dir, ManualTimeSource clock,
+                             CapturingAppender sink) {
+        String base = "http://127.0.0.1:" + port;
+        HttpClient client = heap HttpClient();
+        ClientResponse resp = heap ClientResponse();
+        int32 failures = 0;
+
+        // 6.1.1: no token, a token whose groups map to no role, a permitted one.
+        String adaId #= SecuritySelfTest.enrol(pool, dir, "ada", "members");
+        SecuritySelfTest.enrol(pool, dir, "eve", "guests");
+        int32 s = SecuritySelfTest.get(client, resp, base + "/me", null);
+        String noToken #= resp.bodyString();
+        if (s != 401 || resp.headerString("WWW-Authenticate") == null) {
+            System.stdout.println("  /me without a token answered " + s);
+            failures = failures + 1;
+        }
+        String eve #= SecuritySelfTest.accessToken(pool, "eve");
+        s = SecuritySelfTest.get(client, resp, base + "/me", eve);
+        if (s != 403) {
+            System.stdout.println("  /me with a role-less token answered " + s);
+            failures = failures + 1;
+        }
+        String ada #= SecuritySelfTest.accessToken(pool, "ada");
+        s = SecuritySelfTest.get(client, resp, base + "/me", ada);
+        String me #= resp.bodyString();
+        if (s != 200 || me.indexOf("\"principal\":\"" + adaId + "\"") < 0 || me.indexOf("\"username\":\"ada\"") < 0) {
+            System.stdout.println("  /me with a permitted token answered " + s + " " + me);
+            failures = failures + 1;
+        }
+        s = SecuritySelfTest.get(client, resp, base + "/open", null);
+        String anon #= resp.bodyString();
+        if (s != 200 || anon.indexOf("\"signedIn\":false") < 0) {
+            System.stdout.println("  /open without a token answered " + s + " " + anon);
+            failures = failures + 1;
+        }
+        s = SecuritySelfTest.get(client, resp, base + "/open", ada);
+        String named #= resp.bodyString();
+        if (s != 200 || named.indexOf("\"signedIn\":true") < 0) {
+            System.stdout.println("  /open with a token answered " + s + " " + named);
+            failures = failures + 1;
+        }
+        ClientRequest basic = heap ClientRequest(base + "/me");
+        basic.setHeader("Authorization", "Basic YWRhOmNvcnJlY3QgaG9yc2U=");
+        client.send(basic, resp);
+        if (resp.status() != 401) {
+            System.stdout.println("  a Basic header answered " + resp.status());
+            failures = failures + 1;
+        }
+
+        // 6.1.3: forged and expired answer alike; the log tells them apart.
+        int32 mark = sink.count();
+        // Signed by another pool's key: well formed, and not ours.
+        MemoryUserPool elsewhere = heap MemoryUserPool();
+        MemoryUserDirectory scratch = heap MemoryUserDirectory();
+        SecuritySelfTest.enrol(elsewhere, scratch, "ada", "members");
+        String forged #= SecuritySelfTest.accessToken(elsewhere, "ada");
+        s = SecuritySelfTest.get(client, resp, base + "/me", forged);
+        String forgedBody #= resp.bodyString();
+        if (s != 401 || !forgedBody.equals(noToken)) {
+            System.stdout.println("  a forged token answered " + s + " " + forgedBody);
+            failures = failures + 1;
+        }
+        if (!SecuritySelfTest.logged(sink, mark, "signature")) {
+            System.stdout.println("  the forged token's log line does not name the signature check");
+            failures = failures + 1;
+        }
+        clock.advance(3601L);
+        mark = sink.count();
+        s = SecuritySelfTest.get(client, resp, base + "/me", ada);
+        String expiredBody #= resp.bodyString();
+        if (s != 401 || !expiredBody.equals(forgedBody)) {
+            System.stdout.println("  an expired token answered " + s + " " + expiredBody);
+            failures = failures + 1;
+        }
+        if (!SecuritySelfTest.logged(sink, mark, "expiry") || SecuritySelfTest.logged(sink, mark, "signature")) {
+            System.stdout.println("  the expired token's log line does not name the expiry check alone");
+            failures = failures + 1;
+        }
+        int32 k = 0;
+        while (k < sink.count()) {
+            if (sink.get(k).indexOf(ada) >= 0 || sink.get(k).indexOf(eve) >= 0 || sink.get(k).indexOf(forged) >= 0) {
+                System.stdout.println("  a log line carries a raw token");
+                failures = failures + 1;
+            }
+            k = k + 1;
+        }
+
+        // A verified token whose subject the directory does not link is no principal.
+        RegistrationResult stray #= pool.register("stray", "correct horse");
+        pool.confirm("stray", pool.hooks().lastConfirmationCode(stray.subject()));
+        pool.addToGroup(stray.subject(), "members");
+        String strayToken #= SecuritySelfTest.accessToken(pool, "stray");
+        s = SecuritySelfTest.get(client, resp, base + "/me", strayToken);
+        if (s != 401) {
+            System.stdout.println("  an unlinked subject answered " + s);
+            failures = failures + 1;
+        }
+        return failures;
+    }
+
+    static void addServerTests(TestRunner t) {
+        t.test("a secured route answers 401, 403 and 200; refusals look alike and log apart", () -> {
+            ManualTimeSource clock = heap ManualTimeSource(1800000000L);
+            MemoryUserPool pool #= MemoryUserPool.withClock(clock);
+            MemoryUserDirectory dir = heap MemoryUserDirectory();
+            CapturingAppender sink = heap CapturingAppender();
+            Logger audit = heap Logger("security", Level.INFO, heap JsonlEncoder(), sink);
+            scope {
+                WebServer web #= SecuritySelfTest.server(pool, dir, audit);
+                int32 port = web.port();
+                Task<int32> sv = spawn serve(web);
+                Task<int32> td = spawn drive(port, pool, dir, clock, sink);
+                int32 failures = await td;
+                web.shutdown(Duration.ofSeconds(2));
+                await sv;
+                SelfTest.req(failures == 0, "every security check held (see the lines above)");
+            }
+        });
+    }
+
+    static void ignore(Connection c, JsonBody b) {
+        return;
+    }
+
+    static #String startupError(MemoryUserPool pool, int32 shape) {
+        MemoryUserDirectory dir = heap MemoryUserDirectory();
+        Endpoints api = heap Endpoints();
+        Endpoints other = heap Endpoints();
+        WebSecurity sec = heap WebSecurity(pool, dir);
+        WebServerBuilder b #= WebServer.builder();
+        b.bind("127.0.0.1:0");
+        api.route("GET", "/open", (RequestView q, Response r) -> SecuritySelfTest.open(q, r));
+        sec.rule(api.last(), Policy.anyone());
+        if (shape == 1) {
+            api.route("GET", "/secret", (RequestView q, Response r) -> SecuritySelfTest.open(q, r));
+        }
+        if (shape == 2) {
+            WebSocketEndpoints ws = heap WebSocketEndpoints();
+            ws.json("/feed", (Connection c, JsonBody m) -> SecuritySelfTest.ignore(c, m));
+            b.websockets(#ws);
+        }
+        if (shape == 3) {
+            other.route("GET", "/elsewhere", (RequestView q, Response r) -> SecuritySelfTest.open(q, r));
+            sec.rule(other.last(), Policy.anyone());
+        }
+        if (shape == 4) {
+            sec.rule(api.last(), Policy.authenticated());
+        }
+        if (shape == 5) {
+            sec.requires(IdentityCapability.TOTP());
+        }
+        b.endpoints(#api);
+        b.guard(#sec);
+        try {
+            WebServer web #= b.build();
+            String none = "";
+            return #none;
+        } catch (SecurityException e) {
+            String why = "" + e.getMessage();
+            return #why;
+        }
+    }
+
+    static void addStartupTests(TestRunner t) {
+        t.test("startup refuses an unruled route, a stray or doubled rule, and a missing capability", () -> {
+            MemoryUserPool pool = heap MemoryUserPool();
+            String ok #= SecuritySelfTest.startupError(pool, 0);
+            SelfTest.req(ok.byteLength() == 0, "a fully ruled server starts: " + ok);
+            String unruled #= SecuritySelfTest.startupError(pool, 1);
+            SelfTest.req(unruled.indexOf("GET /secret has no security rule") >= 0, "an unruled route refuses startup: " + unruled);
+            String socket #= SecuritySelfTest.startupError(pool, 2);
+            SelfTest.req(socket.indexOf("GET /feed has no security rule") >= 0, "an unruled WebSocket path refuses startup: " + socket);
+            String stray #= SecuritySelfTest.startupError(pool, 3);
+            SelfTest.req(stray.indexOf("GET /elsewhere") >= 0 && stray.indexOf("does not serve") >= 0,
+                "a rule for another server's route refuses startup: " + stray);
+            String doubled #= SecuritySelfTest.startupError(pool, 4);
+            SelfTest.req(doubled.indexOf("GET /open has two security rules") >= 0, "two rules for one route refuse startup: " + doubled);
+            String[] noTotp = [IdentityCapability.CONFIRMATION(), IdentityCapability.GROUPS()];
+            MemoryUserPool stub #= MemoryUserPool.declaring(noTotp);
+            String missing #= SecuritySelfTest.startupError(stub, 5);
+            SelfTest.req(missing.indexOf("identity.totp") >= 0, "a driver without TOTP refuses startup: " + missing);
+            String present #= SecuritySelfTest.startupError(pool, 5);
+            SelfTest.req(present.byteLength() == 0, "a driver with TOTP starts: " + present);
+        });
+
+        t.test("binding behind a guard consumes AUTHORIZED, so it cannot follow routing directly", () -> {
+            Endpoints api = heap Endpoints();
+            BufferSource src = heap BufferSource(1024, 2);
+            Pipeline p = heap Pipeline(src);
+            p.add(heap RoutingStage(api));
+            p.add(heap BindingStage(api, Kind.AUTHORIZED()));
+            boolean refused = false;
+            try {
+                p.build();
+            } catch (PipelineException e) {
+                refused = e.getMessage().indexOf("authorized") >= 0;
+            }
+            SelfTest.req(refused, "routing then guarded binding fails the build, naming the kind");
+        });
+    }
+
+    static void addHandleTests(TestRunner t) {
+        t.test("challenge handles come from the CSPRNG and are good once", () -> {
+            ChallengeHandles h = heap ChallengeHandles();
+            String a #= ChallengeHandles.mint();
+            String b #= ChallengeHandles.mint();
+            SelfTest.req(a.byteLength() >= 43 && !a.equals(b), "two minted handles are long and differ");
+            String handle #= h.issue("provider-session", "ada", 4);
+            SelfTest.req(handle.indexOf("provider-session") < 0, "the handle does not carry the provider's session");
+            PendingChallenge p #= h.take(handle);
+            SelfTest.req(p != null && p.session().equals("provider-session") && p.username().equals("ada") && p.kind() == 4,
+                "the handle stands for the provider's session");
+            PendingChallenge again #= h.take(handle);
+            SelfTest.req(again == null, "a taken handle is gone");
+            PendingChallenge unknown #= h.take("no-such-handle");
+            SelfTest.req(unknown == null, "an unknown handle is nothing");
+        });
+    }
+
+    static void add(TestRunner t) {
+        SecuritySelfTest.addPolicyTests(t);
+        SecuritySelfTest.addStartupTests(t);
+        SecuritySelfTest.addHandleTests(t);
+        SecuritySelfTest.addServerTests(t);
+    }
+}

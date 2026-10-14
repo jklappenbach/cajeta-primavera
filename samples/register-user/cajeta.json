@@ -20,7 +20,7 @@
         "dependencies": {
             "dev.cajeta.primavera": "0.2.4",
             "dev.cajeta.http":      "0.6.0",
-            "dev.cajeta.cloud":     "0.2.4",
+            "dev.cajeta.cloud":     "0.3.0",
             "dev.cajeta.codec":     "0.8.7"
         },
         "dev-dependencies": {},
@@ -50,12 +50,15 @@
         },
 
         "test": {
-            "description": "Build and run the sample's self-test",
+            "description": "Build the production server and the self-test, then run the self-test against both",
             "actions": [
+                { "action": "build", "flavor": "debug",
+                  "entry-method": "dev.cajeta.sample.register.RegisterApp.main",
+                  "output-path": "build/exe/register-user-production", "id": "app" },
                 { "action": "build", "flavor": "debug", "profile": "test",
                   "entry-method": "dev.cajeta.sample.register.SampleSelfTest.run",
                   "id": "testbin" },
-                { "action": "test", "input": "${testbin.path}" }
+                { "action": "test", "input": "${testbin.path}", "args": ["${app.path}"] }
             ]
         }
     }

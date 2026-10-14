@@ -27,6 +27,8 @@ public final class WebServer {
     // The WebSocket paths: the routes and every connection borrow them.
     WebSocketEndpoints sockets;
     ConnectionRegistry registry;
+    // The guard the pipeline's security stages borrow, or null.
+    Guard guard;
 
     WebServer() {
         this.server = null;
@@ -35,6 +37,7 @@ public final class WebServer {
         this.endpoints = null;
         this.sockets = null;
         this.registry = heap ConnectionRegistry();
+        this.guard = null;
         return;
     }
 
