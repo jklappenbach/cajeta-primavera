@@ -1,0 +1,15 @@
+package dev.cajeta.primavera;
+
+/**
+ * primavera: the request and session scopes, the web pipeline, codecs and the
+ * security guard over cajeta-http and the cajeta-cloud identity port.
+ *
+ * This class holds the release version a consumer can read at run time.
+ * `details.version` in cajeta.json is the single source of truth and this is
+ * its literal copy; scripts/version-gate.sh, run by the test task, refuses
+ * drift between the two (primavera-web 7.1.1).
+ */
+public final class Primavera {
+    /** The library version, the string cajeta.json's details.version carries. */
+    public static #String version() { return "0.3.0"; }
+}

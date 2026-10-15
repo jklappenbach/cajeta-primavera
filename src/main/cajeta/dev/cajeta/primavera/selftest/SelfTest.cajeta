@@ -1,6 +1,7 @@
 package dev.cajeta.primavera.selftest;
 
 import cajeta.error.ScopeNotActiveException;
+import dev.cajeta.primavera.Primavera;
 import dev.cajeta.primavera.context.SessionEntry;
 import dev.cajeta.primavera.context.SessionScope;
 import dev.cajeta.primavera.context.SessionStore;
@@ -320,6 +321,11 @@ public class SelfTest {
         SelfTest.addSessionScopeTests(t);
         SelfTest.addClockSeamTests(t);
         SelfTest.addFiberTests(t);
+        // primavera-web 7.1.1: the version a consumer reads at run time is the
+        // release's. scripts/version-gate.sh holds the manifest to the same string.
+        t.test("Primavera.version() is the release's version", () -> {
+            Assert.equals("0.3.0", Primavera.version());
+        });
         PipelineSelfTest.add(t);
         WebSelfTest.add(t);
         WsSelfTest.add(t);

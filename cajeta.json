@@ -15,7 +15,7 @@
 
     "details": {
         "name":               "dev.cajeta.primavera",
-        "version":            "0.2.4",
+        "version":            "0.3.0",
         "description":        "primavera — enterprise framework for Cajeta (components, web, request/session scope)",
         "license":            "Apache-2.0",
         "authors":            ["Julian Klappenbach"],
@@ -84,6 +84,7 @@
                   "entry-method": "dev.cajeta.primavera.selftest.SelfTest.run",
                   "id": "testbin" },
                 { "action": "test", "input": "${testbin.path}" },
+                { "action": "exec", "command": "bash", "args": ["scripts/version-gate.sh"] },
                 { "action": "exec", "command": "cajeta", "args": ["install"] },
                 { "action": "exec", "command": "cajeta", "args": ["test"],
                   "working-dir": "samples/register-user" }

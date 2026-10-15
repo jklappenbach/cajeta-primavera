@@ -16,14 +16,15 @@ patterns.
 > opinion isn't yours, you keep the substrate and build your own — nothing in the
 > core forces primavera on you.
 
-## Status — v0.1.0 (early)
+## Status — v0.3.0
 
 | Capability | State |
 |---|---|
 | **`Request` and `Session` scopes**, published for `@Component(scope = ...)` (`Requests`, `SessionEntry`) | ✅ built, self-tested |
-| DI substrate (`@Component` / `@Inject` / `@Factory` / aspects) | ↳ **core stdlib** — primavera consumes it (`docs/specification/lang/AspectModel.md`); not owned here |
+| DI substrate (`@Component` / `@Inject` / `@Factory` / aspects) | ↳ **core stdlib** — primavera consumes it (`docs/specification/lang/AspectModel.md`) |
 | Session store with idle and absolute TTLs (`SessionScope`, `SessionStore`) | ✅ built, self-tested |
-| Web request/session model (policy over [cajeta-http](https://github.com/jklappenbach/cajeta-http)) | ▢ in progress, `primavera-web` spec and plan in the cajeta repo |
+| **Web**: the HTTP pipeline over [cajeta-http](https://github.com/jklappenbach/cajeta-http), routing, binding, WebSocket endpoints, codecs and codings ([`docs/Web.md`](docs/Web.md)) | ✅ shipped, self-tested, exercised by the register-user sample |
+| **Security**: bearer tokens from the [cajeta-cloud](https://github.com/jklappenbach/cajeta-cloud) identity port, the policy algebra, startup coverage of every route, challenge handles ([`docs/Security.md`](docs/Security.md)) | ✅ shipped, self-tested; HS256 against the memory driver, request scope only (limits in the page) |
 | Stereotypes (`@Repository` / `@Service`) + deployment `@Profile` | ▢ planned (policy over the core substrate) |
 | primavera-side unit-test helpers (`PrimaveraTest`) | ✅ built, self-tested (on [cajeta-unit](https://github.com/jklappenbach/cajeta-unit)) |
 
