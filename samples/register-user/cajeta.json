@@ -13,7 +13,7 @@
 
     "settings": {
         "toolchain": {
-            "version": "0.43.0",
+            "version": "0.43.1",
             "from":    "https://olla.cajeta.dev"
         },
         "capabilities": [],
