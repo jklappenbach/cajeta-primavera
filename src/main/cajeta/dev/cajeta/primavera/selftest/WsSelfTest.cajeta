@@ -229,6 +229,19 @@ public final class WsSelfTest {
             web.connections().broadcast(big);
             sent = sent + 1;
         }
+        // The overflow aborts the connection, but the registry hears of it
+        // only when the WebSocket's onClose runs, so the close can land after
+        // the last send returns. Wait for it, bounded, and say what was seen.
+        int32 openAfterSends = web.connections().count();
+        int32 settle = 0;
+        while (web.connections().count() > 0 && settle < 300) {
+            Fiber.sleep(Duration.ofMillis(10));
+            settle = settle + 1;
+        }
+        System.stdout.println("  slow reader: " + sent + " sends, " + openAfterSends
+            + " open after them, peak queued " + web.connections().peakQueued()
+            + ", " + web.connections().count() + " open after " + (settle * 10)
+            + " ms more, close code " + web.connections().lastCloseCode());
         int32 failures = 0;
         if (web.connections().count() != 0) {
             System.stdout.println("  a reader that never reads was not closed after " + sent + " sends");
