@@ -15,7 +15,7 @@
 
     "details": {
         "name":               "dev.cajeta.primavera",
-        "version":            "0.3.0",
+        "version":            "0.4.0",
         "description":        "primavera — enterprise framework for Cajeta (components, web, request/session scope)",
         "license":            "Apache-2.0",
         "authors":            ["Julian Klappenbach"],
@@ -50,8 +50,9 @@
         // test source root yet). Move it back when either lands.
         "dependencies": {
             "dev.cajeta.logging": "0.8.6",
-            "dev.cajeta.http":    "0.8.0",
-            "dev.cajeta.cloud":   "0.3.1",
+            "dev.cajeta.http":    "0.9.0",
+            "dev.cajeta.cloud":   "0.4.0",
+            "dev.cajeta.crypto":  "0.1.0",
             "dev.cajeta.unit":    "0.3.6"
         },
 

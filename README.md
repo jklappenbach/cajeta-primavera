@@ -24,7 +24,7 @@ patterns.
 | DI substrate (`@Component` / `@Inject` / `@Factory` / aspects) | ↳ **core stdlib** — primavera consumes it (`docs/specification/lang/AspectModel.md`) |
 | Session store with idle and absolute TTLs (`SessionScope`, `SessionStore`) | ✅ built, self-tested |
 | **Web**: the HTTP pipeline over [cajeta-http](https://github.com/jklappenbach/cajeta-http), routing, binding, WebSocket endpoints, codecs and codings ([`docs/Web.md`](docs/Web.md)) | ✅ shipped, self-tested, exercised by the register-user sample |
-| **Security**: bearer tokens from the [cajeta-cloud](https://github.com/jklappenbach/cajeta-cloud) identity port, the policy algebra, startup coverage of every route, challenge handles ([`docs/Security.md`](docs/Security.md)) | ✅ shipped, self-tested; HS256 against the memory driver, request scope only (limits in the page) |
+| **Security**: bearer tokens from the [cajeta-cloud](https://github.com/jklappenbach/cajeta-cloud) identity port, the policy algebra, startup coverage of every route, challenge handles ([`docs/Security.md`](docs/Security.md)) | ✅ shipped, self-tested; RS256 and ES256 verified, ES256 from the memory driver, request scope only (limits in the page) |
 | Stereotypes (`@Repository` / `@Service`) + deployment `@Profile` | ▢ planned (policy over the core substrate) |
 | primavera-side unit-test helpers (`PrimaveraTest`) | ✅ built, self-tested (on [cajeta-unit](https://github.com/jklappenbach/cajeta-unit)) |
 

@@ -3,7 +3,7 @@ package dev.cajeta.primavera.security;
 import cajeta.collection.ArrayList;
 import cajeta.concurrent.Lock;
 import cajeta.concurrent.LockGuard;
-import cajeta.hash.SecureRandom;
+import dev.cajeta.crypto.SecureRandom;
 import cajeta.lang.String;
 import cajeta.codec.Base64;
 import dev.cajeta.primavera.context.SystemTimeSource;

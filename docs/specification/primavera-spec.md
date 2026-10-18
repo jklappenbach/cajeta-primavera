@@ -320,12 +320,13 @@ future `cajeta.crypto` must provide; web column: needs cajeta-http.)
   (§6); CSRF weight depends on the session-vs-token default posture
   (§16 open decision).
 - **Secrets** — the `SecretSource` seam (§4).
-- **Crypto primitives are NOT primavera's** — they belong in stdlib.
-  Concrete asks for cajeta-two, in priority order: **HMAC-SHA256** (~small,
-  unlocks HS256 + cookie signing), **CSPRNG** (getrandom-backed; session
-  ids, CSRF tokens), **constant-time compare**; then `cajeta.crypto`
-  asymmetric verify (RSA-PSS/PKCS1, ECDSA P-256, Ed25519) and a COSE/CBOR
-  codec (WebAuthn). Primavera consumes, never implements.
+- **Crypto primitives are NOT primavera's.** *(Amended 2026-10-18 with
+  cajeta-crypto spec §7.4.)* They come from the `dev.cajeta.crypto` library,
+  which took the stdlib's HMAC-SHA256, CSPRNG, PBKDF2 and TOTP and adds
+  RS256 and ES256 verification and ES256 signing; constant-time compare
+  stays in the stdlib (`cajeta.hash.Hash`). Still to come there: RSA-PSS,
+  Ed25519 and a COSE/CBOR codec (WebAuthn). Primavera consumes, never
+  implements.
 
 ## 9. Outbound clients — **per spec** (over cajeta-http)
 

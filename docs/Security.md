@@ -134,11 +134,12 @@ TOTP enrolment included.
 
 ## Limits
 
-- **HS256 only, today.** The memory driver signs its tokens HS256 under a
-  per-process key, and that is what this package verifies in the sample and
-  its tests. A real provider signs RS256 or ES256. Verifying those needs
-  asymmetric verification in the stdlib, and it arrives with the first
-  provider adapter (primavera-web spec §8.8).
+- **RS256 and ES256 only.** Tokens are verified through cajeta-cloud's
+  identity port, which checks RS256 and ES256 over the provider's JWKS with
+  `dev.cajeta.crypto` and refuses HS256. The memory driver signs ES256 under
+  a per-process key pair, so the sample and its tests take the path a real
+  provider's tokens take. A real provider needs its adapter
+  (primavera-web spec §8.8).
 - **Access tokens live until they expire.** Verification is offline, so
   logging out revokes the refresh token and the provider's session, but an
   access token already issued is accepted until its `exp`.
