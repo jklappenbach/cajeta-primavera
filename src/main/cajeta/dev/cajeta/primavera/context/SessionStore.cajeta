@@ -95,6 +95,8 @@ public class SessionStore {
     String epochText;
     int8[] macKey;
     int64 nextSerial;
+    // Live sessions `open` may hold (spec §2.5); 0 means no cap.
+    int32 capacity;
 
     public SessionStore() {
         HashMap<String, SessionEntry> created = heap HashMap<String, SessionEntry>();
@@ -111,6 +113,17 @@ public class SessionStore {
         this.epochText #= et;
         this.macKey #= k;
         this.nextSerial = 1;
+        this.capacity = 0;
+    }
+
+    /**
+     * Refuse an `open` once `n` live sessions are held (spec §2.5); 0, the
+     * default, sets no cap. Expired sessions not yet swept do not count: an
+     * open at capacity sweeps them first. `create(id)` is not capped.
+     */
+    public void setCapacity(int32 n) {
+        LockGuard g #= this.gate.acquire();
+        this.capacity = n;
     }
 
     /**
@@ -238,11 +251,25 @@ public class SessionStore {
 
     /**
      * Open a session under an id this store issues (spec §2.1) and return the
-     * id, owned by the caller. The serial advances only here, once the
-     * session is in the store.
+     * id, owned by the caller, or null when the store is at its capacity
+     * (§2.5). The serial advances only here, once the session is in the
+     * store, so a refusal consumes none (§2.3.2).
      */
     public #String openAt(int64 now) {
+        // The room check and the insert share this one hold of the gate, so
+        // fibers opening at once never pass the capacity (spec §2.6).
         LockGuard g #= this.gate.acquire();
+        if (this.capacity > 0 && this.sessions.count() >= (int64) this.capacity) {
+            this.evictExpiredHeld(now);
+            if (this.sessions.count() >= (int64) this.capacity) {
+                if (log.enabled(Level.DEBUG)) {
+                    LogRecord r #= log.event(Level.DEBUG, "session open refused at capacity");
+                    r.i64("capacity", this.capacity);
+                    log.emit(#r);
+                }
+                return null;
+            }
+        }
         int64 serial = this.nextSerial;
         int8[] sb #= SessionStore.serialBytesOf(serial);
         int8[] mac #= this.macOf(sb);
@@ -350,6 +377,11 @@ public class SessionStore {
      */
     public int32 evictExpiredAt(int64 now) {
         LockGuard g #= this.gate.acquire();
+        return this.evictExpiredHeld(now);
+    }
+
+    // The sweep itself; the caller holds the gate.
+    int32 evictExpiredHeld(int64 now) {
         // Two passes: streaming the map while removing is undefined, and the
         // streamed keys are borrows of slot state — copy the doomed ids out
         // first, then remove (each discarded remove drops its entry).

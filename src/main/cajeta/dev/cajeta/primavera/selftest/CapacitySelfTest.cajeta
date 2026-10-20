@@ -1,0 +1,110 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.codec.Base64;
+import cajeta.concurrent.AtomicInt32;
+import dev.cajeta.primavera.context.SessionState;
+import dev.cajeta.primavera.context.SessionStore;
+import dev.cajeta.unit.TestRunner;
+
+/**
+ * A store's capacity (primavera-live-sessions spec §2.5, §2.6, plan Unit 2):
+ * at capacity `open()` is refused with null and displaces nobody, expired
+ * sessions do not count, a refusal consumes no serial, and fibers opening at
+ * once never pass the capacity.
+ */
+public class CapacitySelfTest {
+    // The race test's shared store and tally (test bodies mutate only statics).
+    static SessionStore raceStore;
+    static AtomicInt32 raceWins = heap AtomicInt32(0);
+
+    /** The serial an issued id carries: its middle field, 8 big-endian bytes. */
+    static int64 serialOf(String id) {
+        int64 first = id.indexOf(".");
+        int64 second = id.indexOfFrom(".", first + (int64) 1);
+        String mid #= id.substring((int32) first + 1, (int32) second);
+        int8[] b #= Base64.decode(mid);
+        int64 v = 0;
+        int32 i = 0;
+        while (i < 8) {
+            v = (v << (int64) 8) | (((int64) b[i]) & (int64) 255);
+            i = i + 1;
+        }
+        return v;
+    }
+
+    static async void racer() {
+        String id #= CapacitySelfTest.raceStore.open();
+        if (id != null) {
+            CapacitySelfTest.raceWins.fetchAdd(1);
+        }
+    }
+
+    public static void add(TestRunner t) {
+        t.test("at capacity open is refused with null and displaces no live session", () -> {
+            SessionStore store = heap SessionStore();
+            store.setCapacity(2);
+            String a #= store.openAt(0);
+            String b #= store.openAt(0);
+            String c #= store.openAt(0);
+            SelfTest.req(a != null && b != null, "the first two opens succeed");
+            SelfTest.req(c == null, "the third open is refused");
+            SelfTest.req(store.lookupAt(a, 0) == SessionState.OPEN, "the first stays OPEN");
+            SelfTest.req(store.lookupAt(b, 0) == SessionState.OPEN, "the second stays OPEN");
+            SelfTest.req(store.count() == 2, "nothing added");
+        });
+
+        t.test("an expired, unswept session does not count against capacity", () -> {
+            SessionStore store = heap SessionStore();
+            store.setCapacity(1);
+            store.setIdleTtl(1000);
+            String a #= store.openAt(0);
+            String b #= store.openAt(2000);
+            SelfTest.req(b != null, "open succeeds past the expired one");
+            SelfTest.req(store.lookupAt(a, 2000) == SessionState.GONE, "the expired one is GONE");
+            SelfTest.req(store.lookupAt(b, 2000) == SessionState.OPEN, "the new one is OPEN");
+        });
+
+        t.test("a refused open consumes no serial", () -> {
+            SessionStore store = heap SessionStore();
+            store.setCapacity(1);
+            String a #= store.openAt(0);
+            String refused #= store.openAt(0);
+            SelfTest.req(refused == null, "refused at capacity");
+            store.invalidate(a);
+            String b #= store.openAt(0);
+            SelfTest.req(b != null, "open succeeds once there is room");
+            SelfTest.req(CapacitySelfTest.serialOf(b) == CapacitySelfTest.serialOf(a) + (int64) 1,
+                         "the next issued serial follows the last issued one");
+        });
+
+        t.test("create on a live id at capacity displaces it and succeeds", () -> {
+            SessionStore store = heap SessionStore();
+            store.setCapacity(1);
+            store.createAt("x", 0);
+            store.createAt("x", 10);
+            SelfTest.req(store.count() == 1, "the count does not grow");
+            SelfTest.req(store.lookupAt("x", 10) == SessionState.OPEN, "the displacing session is OPEN");
+        });
+
+        t.test("32 fibers opening at once against capacity minus one: exactly one succeeds", () -> {
+            // Built in the static it lives in: a test-owned local stored into
+            // a static would outlive the test's frame.
+            CapacitySelfTest.raceStore = heap SessionStore();
+            SessionStore store = CapacitySelfTest.raceStore;
+            store.setCapacity(8);
+            int32 i = 0;
+            while (i < 7) {
+                String id #= store.openAt(0);
+                i = i + 1;
+            }
+            CapacitySelfTest.raceWins.store(0);
+            scope {
+                for (int32 k = 0; k < 32; k = k + 1) {
+                    spawn racer();
+                }
+            }
+            SelfTest.req(CapacitySelfTest.raceWins.load() == 1, "exactly one of 32 racing opens succeeds");
+            SelfTest.req(store.count() == 8, "the store holds its capacity");
+        });
+    }
+}

@@ -319,6 +319,7 @@ public class SelfTest {
         SelfTest.addRequestScopeTests(t);
         SelfTest.addSessionStoreTests(t);
         IssuedSessionSelfTest.add(t);
+        CapacitySelfTest.add(t);
         SelfTest.addSessionScopeTests(t);
         SelfTest.addClockSeamTests(t);
         SelfTest.addFiberTests(t);
