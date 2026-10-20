@@ -1,0 +1,172 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.concurrent.AtomicInt32;
+import cajeta.concurrent.FiberLocal;
+import dev.cajeta.primavera.context.SessionEntry;
+import dev.cajeta.primavera.context.SessionState;
+import dev.cajeta.primavera.context.SessionStore;
+import dev.cajeta.unit.TestRunner;
+
+/**
+ * The eviction observer (primavera-live-sessions spec §2.7, §2.7.1, decision
+ * §7.4, plan Unit 3): called once per session that leaves the store, with the
+ * reason, after the store's lock is released and before the session's
+ * components drop.
+ */
+public class EvictionSelfTest {
+    static AtomicInt32 calls = heap AtomicInt32(0);
+    static AtomicInt32 closed = heap AtomicInt32(0);
+    static AtomicInt32 expired = heap AtomicInt32(0);
+    static AtomicInt32 displaced = heap AtomicInt32(0);
+    static int32 obsTag;
+    static int32 obsDropped;
+    static boolean reopened;
+    static AtomicInt32 onRemover = heap AtomicInt32(0);
+
+    // Stores and ids the observers and racer fibers reach (statics, since
+    // test bodies capture no mutable locals).
+    static SessionStore reentrant;
+    static SessionStore raced;
+    static String idA;
+    static String idB;
+    static FiberLocal<String> remover = heap FiberLocal<String>();
+
+    static void reset() {
+        EvictionSelfTest.calls.store(0);
+        EvictionSelfTest.closed.store(0);
+        EvictionSelfTest.expired.store(0);
+        EvictionSelfTest.displaced.store(0);
+        EvictionSelfTest.obsTag = 0;
+        EvictionSelfTest.obsDropped = -1;
+        EvictionSelfTest.reopened = false;
+        EvictionSelfTest.onRemover.store(0);
+    }
+
+    static void count(String id, int32 reason) {
+        EvictionSelfTest.calls.fetchAdd(1);
+        if (reason == SessionStore.CLOSED) { EvictionSelfTest.closed.fetchAdd(1); }
+        if (reason == SessionStore.EXPIRED) { EvictionSelfTest.expired.fetchAdd(1); }
+        if (reason == SessionStore.DISPLACED) { EvictionSelfTest.displaced.fetchAdd(1); }
+    }
+
+    static void readComponent(String id, int32 reason) {
+        SessionProbe p = SessionProbe.__cajeta_inject();
+        EvictionSelfTest.obsTag = p.tag;
+        EvictionSelfTest.obsDropped = SessionProbe.dropped();
+    }
+
+    static void reenter(String id, int32 reason) {
+        String fresh #= EvictionSelfTest.reentrant.openAt(0);
+        EvictionSelfTest.reopened = fresh != null
+            && EvictionSelfTest.reentrant.lookupAt(id, 0) == SessionState.GONE;
+    }
+
+    static void checkRemover(String id, int32 reason) {
+        if (EvictionSelfTest.remover.isBound() && EvictionSelfTest.remover.get().equals(id)) {
+            EvictionSelfTest.onRemover.fetchAdd(1);
+        }
+    }
+
+    static async void removeOne(int32 which) {
+        String id = which == 0 ? EvictionSelfTest.idA : EvictionSelfTest.idB;
+        EvictionSelfTest.remover.where(id, () -> EvictionSelfTest.raced.invalidate(EvictionSelfTest.remover.get()));
+    }
+
+    public static void add(TestRunner t) {
+        t.test("each removal reports its reason: closed, expired or displaced", () -> {
+            EvictionSelfTest.reset();
+            SessionStore store = heap SessionStore();
+            store.setEvictionObserver((String id, int32 reason) -> EvictionSelfTest.count(id, reason));
+            store.setIdleTtl(1000);
+            String a #= store.openAt(0);
+            store.invalidate(a);
+            SelfTest.req(EvictionSelfTest.closed.load() == 1, "invalidate reports CLOSED");
+            store.createAt("x", 0);
+            store.createAt("x", 0);
+            SelfTest.req(EvictionSelfTest.displaced.load() == 1, "create on a live id reports DISPLACED");
+            String b #= store.openAt(0);
+            SelfTest.req(store.resolveAt(b, 5000) == null, "b expired");
+            SelfTest.req(EvictionSelfTest.expired.load() == 1, "expiry on resolve reports EXPIRED");
+            String c #= store.openAt(5000);
+            SelfTest.req(store.lookupAt(c, 9000) == SessionState.GONE, "c expired");
+            SelfTest.req(EvictionSelfTest.expired.load() == 2, "expiry on lookup reports EXPIRED");
+            String d #= store.openAt(9000);
+            SelfTest.req(store.evictExpiredAt(20000) == 2, "the sweep takes d and x");
+            SelfTest.req(EvictionSelfTest.expired.load() == 4, "the sweep reports EXPIRED for each");
+            String e #= store.openAt(20000);
+            String f #= store.openAt(20000);
+            SelfTest.req(store.invalidateAll() == 2, "invalidateAll takes both");
+            SelfTest.req(EvictionSelfTest.closed.load() == 3, "invalidateAll reports CLOSED for each");
+            SelfTest.req(EvictionSelfTest.calls.load() == 8, "one call per removed session: a, x, b, c, d, x again, e, f");
+        });
+
+        t.test("an open at capacity that sweeps an expired session reports it EXPIRED", () -> {
+            EvictionSelfTest.reset();
+            SessionStore store = heap SessionStore();
+            store.setEvictionObserver((String id, int32 reason) -> EvictionSelfTest.count(id, reason));
+            store.setCapacity(1);
+            store.setIdleTtl(1000);
+            String a #= store.openAt(0);
+            String b #= store.openAt(5000);
+            SelfTest.req(b != null, "room made by the sweep");
+            SelfTest.req(EvictionSelfTest.expired.load() == 1 && EvictionSelfTest.calls.load() == 1,
+                         "the swept session reported once, EXPIRED");
+        });
+
+        t.test("a session's observer runs exactly once, whatever removes it", () -> {
+            EvictionSelfTest.reset();
+            SessionStore store = heap SessionStore();
+            store.setEvictionObserver((String id, int32 reason) -> EvictionSelfTest.count(id, reason));
+            store.setIdleTtl(1000);
+            String a #= store.openAt(0);
+            store.invalidate(a);
+            store.invalidate(a);
+            SelfTest.req(store.lookupAt(a, 5000) == SessionState.GONE, "GONE");
+            SelfTest.req(store.resolveAt(a, 5000) == null, "absent");
+            store.evictExpiredAt(5000);
+            store.invalidateAll();
+            SelfTest.req(EvictionSelfTest.calls.load() == 1, "one call in all");
+        });
+
+        t.test("the observer reads the session's component, which drops after it returns", () -> {
+            EvictionSelfTest.reset();
+            SessionProbe.reset();
+            SessionStore store = heap SessionStore();
+            store.setEvictionObserver((String id, int32 reason) -> EvictionSelfTest.readComponent(id, reason));
+            String a #= store.openAt(0);
+            SessionEntry e = store.resolveAt(a, 0);
+            e.within(() -> SelfTest.touchSession(1));
+            int32 tag = SelfTest.seenTag;
+            store.invalidate(a);
+            SelfTest.req(EvictionSelfTest.obsTag == tag, "the observer saw the session's own component");
+            SelfTest.req(EvictionSelfTest.obsDropped == 0, "nothing dropped while the observer ran");
+            SelfTest.req(SessionProbe.dropped() == 1, "the component dropped after the observer");
+        });
+
+        t.test("the observer can call back into the store without deadlock", () -> {
+            EvictionSelfTest.reset();
+            EvictionSelfTest.reentrant = heap SessionStore();
+            SessionStore store = EvictionSelfTest.reentrant;
+            store.setEvictionObserver((String id, int32 reason) -> EvictionSelfTest.reenter(id, reason));
+            String a #= store.openAt(0);
+            store.invalidate(a);
+            SelfTest.req(EvictionSelfTest.reopened, "open and lookup from inside the observer");
+            SelfTest.req(store.count() == 1, "the session the observer opened is held");
+        });
+
+        t.test("two sessions removed on two fibers at once: both observers run, on the removing fibers", () -> {
+            EvictionSelfTest.reset();
+            EvictionSelfTest.raced = heap SessionStore();
+            SessionStore store = EvictionSelfTest.raced;
+            store.setEvictionObserver((String id, int32 reason) -> EvictionSelfTest.checkRemover(id, reason));
+            EvictionSelfTest.idA #= store.openAt(0);
+            EvictionSelfTest.idB #= store.openAt(0);
+            scope {
+                spawn removeOne(0);
+                spawn removeOne(1);
+            }
+            SelfTest.req(EvictionSelfTest.onRemover.load() == 2, "each observer ran on the fiber that removed its session");
+            SelfTest.req(store.count() == 0, "both removed");
+        });
+    }
+}

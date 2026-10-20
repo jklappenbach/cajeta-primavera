@@ -320,6 +320,7 @@ public class SelfTest {
         SelfTest.addSessionStoreTests(t);
         IssuedSessionSelfTest.add(t);
         CapacitySelfTest.add(t);
+        EvictionSelfTest.add(t);
         SelfTest.addSessionScopeTests(t);
         SelfTest.addClockSeamTests(t);
         SelfTest.addFiberTests(t);

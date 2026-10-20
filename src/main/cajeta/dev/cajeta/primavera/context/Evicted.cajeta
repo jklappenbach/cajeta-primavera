@@ -1,0 +1,33 @@
+package dev.cajeta.primavera.context;
+
+import cajeta.collection.ArrayList;
+
+/**
+ * The sessions one store call removed, with each one's reason. The store
+ * collects them under its lock and keeps them past it, so the eviction
+ * observer runs after the lock is released and before the sessions'
+ * components drop with this holder (primavera-live-sessions spec §2.7, §7.4).
+ */
+final class Evicted {
+    ArrayList<String> ids;
+    ArrayList<SessionEntry> entries;
+    ArrayList<int32> reasons;
+
+    Evicted() {
+        this.ids = heap ArrayList<String>();
+        this.entries = heap ArrayList<SessionEntry>();
+        this.reasons = heap ArrayList<int32>();
+    }
+
+    // Takes the removed entry's title; keeps a private copy of its id.
+    void add(String id, #SessionEntry e, int32 reason) {
+        String copy #= id.substring(0, id.byteLength());
+        this.ids.add(#copy);
+        this.entries.add(#e);
+        this.reasons.add(reason);
+    }
+
+    int32 count() {
+        return this.ids.count();
+    }
+}

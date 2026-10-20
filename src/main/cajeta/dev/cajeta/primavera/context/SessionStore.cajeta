@@ -97,6 +97,16 @@ public class SessionStore {
     int64 nextSerial;
     // Live sessions `open` may hold (spec §2.5); 0 means no cap.
     int32 capacity;
+    // Called once per session that leaves the store (spec §2.7).
+    (String, int32) -> void observer;
+    boolean observed;
+
+    /** An eviction reason: the application ended the session (`invalidate`, `invalidateAll`). */
+    public static int32 CLOSED = 1;
+    /** An eviction reason: an idle or absolute TTL passed. */
+    public static int32 EXPIRED = 2;
+    /** An eviction reason: `create` on the session's id replaced it. */
+    public static int32 DISPLACED = 3;
 
     public SessionStore() {
         HashMap<String, SessionEntry> created = heap HashMap<String, SessionEntry>();
@@ -114,6 +124,52 @@ public class SessionStore {
         this.macKey #= k;
         this.nextSerial = 1;
         this.capacity = 0;
+        this.observed = false;
+    }
+
+    /**
+     * Call `observer` once for every session that leaves this store, with
+     * its id and the reason: {@link #CLOSED}, {@link #EXPIRED} or
+     * {@link #DISPLACED} (spec §2.7).
+     *
+     * It runs on the fiber that removed the session (a resolve or lookup, the
+     * sweep, `invalidate` or `create`), after the store's lock is released,
+     * so it may call back into the store. It runs inside the removed
+     * session, so a `Session` component injected there is that session's
+     * own; the session's components drop after it returns.
+     *
+     * Thread safety (§2.7.1): different sessions leaving the store at once
+     * run their observers concurrently, each on its own removing fiber. An
+     * observer that shares state across sessions guards it with its own lock.
+     */
+    public void setEvictionObserver((String, int32) -> void observer) {
+        LockGuard g #= this.gate.acquire();
+        this.observer #= observer;
+        this.observed = true;
+    }
+
+    // Runs the observer for each removed session, outside the gate; the
+    // caller drops `ev` afterwards, and with it the sessions' components.
+    void notifyEvicted(Evicted ev) {
+        if (!this.observed) {
+            return;
+        }
+        (String, int32) -> void obs = this.observer;
+        int32 i = 0;
+        int32 n = ev.count();
+        while (i < n) {
+            String id = ev.ids.get(i);
+            int32 reason = ev.reasons.get(i);
+            SessionEntry e = ev.entries.get(i);
+            e.within(() -> SessionStore.callObserver(obs, id, reason));
+            i = i + 1;
+        }
+    }
+
+    // A function-typed local called inside a lambda resolves as a member of
+    // `this`, so the call goes through a parameter here.
+    static void callObserver((String, int32) -> void obs, String id, int32 reason) {
+        obs(id, reason);
     }
 
     /**
@@ -162,15 +218,23 @@ public class SessionStore {
      * semantics). The store owns a private copy of the id string.
      */
     public void createAt(String id, int64 now) {
-        LockGuard g #= this.gate.acquire();
-        SessionEntry e = heap SessionEntry(now);
-        String owned #= id.substring(0, id.byteLength());
-        this.sessions.put(#owned, #e);
-        if (log.enabled(Level.DEBUG)) {
-            LogRecord r #= log.event(Level.DEBUG, "session created");
-            r.str("id", id);
-            log.emit(#r);
+        Evicted ev = heap Evicted();
+        {
+            LockGuard g #= this.gate.acquire();
+            SessionEntry old = this.sessions.remove(id);
+            if (old != null) {
+                ev.add(id, #old, SessionStore.DISPLACED);
+            }
+            SessionEntry e = heap SessionEntry(now);
+            String owned #= id.substring(0, id.byteLength());
+            this.sessions.put(#owned, #e);
+            if (log.enabled(Level.DEBUG)) {
+                LogRecord r #= log.event(Level.DEBUG, "session created");
+                r.str("id", id);
+                log.emit(#r);
+            }
         }
+        this.notifyEvicted(ev);
     }
 
     public void create(String id) {
@@ -256,36 +320,45 @@ public class SessionStore {
      * store, so a refusal consumes none (§2.3.2).
      */
     public #String openAt(int64 now) {
-        // The room check and the insert share this one hold of the gate, so
-        // fibers opening at once never pass the capacity (spec §2.6).
-        LockGuard g #= this.gate.acquire();
-        if (this.capacity > 0 && this.sessions.count() >= (int64) this.capacity) {
-            this.evictExpiredHeld(now);
-            if (this.sessions.count() >= (int64) this.capacity) {
+        Evicted ev = heap Evicted();
+        String out = null;
+        {
+            // The room check and the insert share this one hold of the gate,
+            // so fibers opening at once never pass the capacity (spec §2.6).
+            LockGuard g #= this.gate.acquire();
+            boolean room = true;
+            if (this.capacity > 0 && this.sessions.count() >= (int64) this.capacity) {
+                this.evictExpiredHeld(now, ev);
+                if (this.sessions.count() >= (int64) this.capacity) {
+                    room = false;
+                    if (log.enabled(Level.DEBUG)) {
+                        LogRecord r #= log.event(Level.DEBUG, "session open refused at capacity");
+                        r.i64("capacity", this.capacity);
+                        log.emit(#r);
+                    }
+                }
+            }
+            if (room) {
+                int64 serial = this.nextSerial;
+                int8[] sb #= SessionStore.serialBytesOf(serial);
+                int8[] mac #= this.macOf(sb);
+                String st #= Base64.encodeUrlSafe(sb, (int64) 8);
+                String mt #= Base64.encodeUrlSafe(mac, (int64) 16);
+                String id #= this.epochText + "." + st + "." + mt;
+                String key #= id.substring(0, id.byteLength());
+                SessionEntry e = heap SessionEntry(now);
+                this.sessions.put(#key, #e);
+                this.nextSerial = serial + (int64) 1;
                 if (log.enabled(Level.DEBUG)) {
-                    LogRecord r #= log.event(Level.DEBUG, "session open refused at capacity");
-                    r.i64("capacity", this.capacity);
+                    LogRecord r #= log.event(Level.DEBUG, "session opened");
+                    r.i64("serial", serial);
                     log.emit(#r);
                 }
-                return null;
+                out #= id;
             }
         }
-        int64 serial = this.nextSerial;
-        int8[] sb #= SessionStore.serialBytesOf(serial);
-        int8[] mac #= this.macOf(sb);
-        String st #= Base64.encodeUrlSafe(sb, (int64) 8);
-        String mt #= Base64.encodeUrlSafe(mac, (int64) 16);
-        String id #= this.epochText + "." + st + "." + mt;
-        String key #= id.substring(0, id.byteLength());
-        SessionEntry e = heap SessionEntry(now);
-        this.sessions.put(#key, #e);
-        this.nextSerial = serial + (int64) 1;
-        if (log.enabled(Level.DEBUG)) {
-            LogRecord r #= log.event(Level.DEBUG, "session opened");
-            r.i64("serial", serial);
-            log.emit(#r);
-        }
-        return #id;
+        this.notifyEvicted(ev);
+        return #out;
     }
 
     public #String open() {
@@ -300,24 +373,33 @@ public class SessionStore {
      * ended one. GONE and UNKNOWN never create a session (§2.4).
      */
     public SessionState lookupAt(String id, int64 now) {
-        LockGuard g #= this.gate.acquire();
-        SessionEntry e = this.sessions.get(id);
-        if (e != null) {
-            if (!this.isExpired(e, now)) {
-                e.lastAccessed = now;
-                return SessionState.OPEN;
+        Evicted ev = null;
+        SessionState state = SessionState.UNKNOWN;
+        {
+            LockGuard g #= this.gate.acquire();
+            SessionEntry e = this.sessions.get(id);
+            if (e != null) {
+                if (!this.isExpired(e, now)) {
+                    e.lastAccessed = now;
+                    return SessionState.OPEN;
+                }
+                ev = heap Evicted();
+                SessionEntry gone = this.sessions.remove(id);
+                ev.add(id, #gone, SessionStore.EXPIRED);
+                if (log.enabled(Level.DEBUG)) {
+                    LogRecord r #= log.event(Level.DEBUG, "session expired on lookup");
+                    r.str("id", id);
+                    log.emit(#r);
+                }
             }
-            this.sessions.remove(id);
-            if (log.enabled(Level.DEBUG)) {
-                LogRecord r #= log.event(Level.DEBUG, "session expired on lookup");
-                r.str("id", id);
-                log.emit(#r);
+            if (this.issuedHere(id)) {
+                state = SessionState.GONE;
             }
         }
-        if (this.issuedHere(id)) {
-            return SessionState.GONE;
+        if (ev != null) {
+            this.notifyEvicted(ev);
         }
-        return SessionState.UNKNOWN;
+        return state;
     }
 
     public SessionState lookup(String id) {
@@ -330,24 +412,29 @@ public class SessionStore {
      * The entry is a borrow of store state, valid until the store drops it.
      */
     public SessionEntry resolveAt(String id, int64 now) {
-        LockGuard g #= this.gate.acquire();
-        SessionEntry e = this.sessions.get(id);
-        if (e == null) {
-            return null;
-        }
-        if (this.isExpired(e, now)) {
-            this.sessions.remove(id);
+        Evicted ev = heap Evicted();
+        {
+            LockGuard g #= this.gate.acquire();
+            SessionEntry e = this.sessions.get(id);
+            if (e == null) {
+                return null;
+            }
+            if (!this.isExpired(e, now)) {
+                e.lastAccessed = now;
+                // A view of the map's slot, not of the local: `e` is a
+                // binding the compiler cannot prove is a borrow.
+                return this.sessions.get(id);
+            }
+            SessionEntry gone = this.sessions.remove(id);
+            ev.add(id, #gone, SessionStore.EXPIRED);
             if (log.enabled(Level.DEBUG)) {
                 LogRecord r #= log.event(Level.DEBUG, "session expired on resolve");
                 r.str("id", id);
                 log.emit(#r);
             }
-            return null;
         }
-        e.lastAccessed = now;
-        // A view of the map's slot, not of the local: `e` is a binding the
-        // compiler cannot prove is a borrow.
-        return this.sessions.get(id);
+        this.notifyEvicted(ev);
+        return null;
     }
 
     public SessionEntry resolve(String id) {
@@ -361,13 +448,20 @@ public class SessionStore {
 
     /** Drop the session under `id` — its bag and beans free immediately. */
     public void invalidate(String id) {
-        LockGuard g #= this.gate.acquire();
-        this.sessions.remove(id);
-        if (log.enabled(Level.DEBUG)) {
-            LogRecord r #= log.event(Level.DEBUG, "session invalidated");
-            r.str("id", id);
-            log.emit(#r);
+        Evicted ev = heap Evicted();
+        {
+            LockGuard g #= this.gate.acquire();
+            SessionEntry gone = this.sessions.remove(id);
+            if (gone != null) {
+                ev.add(id, #gone, SessionStore.CLOSED);
+            }
+            if (log.enabled(Level.DEBUG)) {
+                LogRecord r #= log.event(Level.DEBUG, "session invalidated");
+                r.str("id", id);
+                log.emit(#r);
+            }
         }
+        this.notifyEvicted(ev);
     }
 
     /**
@@ -376,12 +470,19 @@ public class SessionStore {
      * batch of creates) so idle-server sessions free without a lookup.
      */
     public int32 evictExpiredAt(int64 now) {
-        LockGuard g #= this.gate.acquire();
-        return this.evictExpiredHeld(now);
+        Evicted ev = heap Evicted();
+        int32 n = 0;
+        {
+            LockGuard g #= this.gate.acquire();
+            n = this.evictExpiredHeld(now, ev);
+        }
+        this.notifyEvicted(ev);
+        return n;
     }
 
-    // The sweep itself; the caller holds the gate.
-    int32 evictExpiredHeld(int64 now) {
+    // The sweep itself, collecting what it removes into `ev`; the caller
+    // holds the gate.
+    int32 evictExpiredHeld(int64 now, Evicted ev) {
         // Two passes: streaming the map while removing is undefined, and the
         // streamed keys are borrows of slot state — copy the doomed ids out
         // first, then remove (each discarded remove drops its entry).
@@ -405,7 +506,8 @@ public class SessionStore {
         int32 n = doomed.count();
         while (i < n) {
             String id = doomed.get(i);
-            this.sessions.remove(id);
+            SessionEntry gone = this.sessions.remove(id);
+            ev.add(id, #gone, SessionStore.EXPIRED);
             i = i + 1;
         }
         if (n > 0) {
@@ -433,6 +535,14 @@ public class SessionStore {
      * the number dropped.
      */
     public int32 invalidateAll() {
+        Evicted ev = heap Evicted();
+        int32 n = this.invalidateAllHeld(ev);
+        this.notifyEvicted(ev);
+        return n;
+    }
+
+    // Removes every session into `ev` under the gate.
+    int32 invalidateAllHeld(Evicted ev) {
         LockGuard g #= this.gate.acquire();
         // Same two-pass shape as evictExpiredAt: copy the ids out first —
         // streaming the map while removing is undefined.
@@ -453,7 +563,8 @@ public class SessionStore {
         int32 n = ids.count();
         while (i < n) {
             String id = ids.get(i);
-            this.sessions.remove(id);
+            SessionEntry gone = this.sessions.remove(id);
+            ev.add(id, #gone, SessionStore.CLOSED);
             i = i + 1;
         }
         if (n > 0) {
