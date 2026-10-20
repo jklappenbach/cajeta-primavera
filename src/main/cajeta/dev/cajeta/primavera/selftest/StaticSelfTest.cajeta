@@ -1,0 +1,212 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.io.file.File;
+import cajeta.io.file.Path;
+import cajeta.lang.String;
+import cajeta.time.Clock;
+import cajeta.time.Duration;
+import dev.cajeta.cloud.identity.MemoryUserPool;
+import dev.cajeta.http.Bytes;
+import dev.cajeta.http.ClientRequest;
+import dev.cajeta.http.ClientResponse;
+import dev.cajeta.http.client.HttpClient;
+import dev.cajeta.http.ws.WebSocket;
+import dev.cajeta.http.ws.WsMessage;
+import dev.cajeta.primavera.identity.MemoryUserDirectory;
+import dev.cajeta.primavera.security.Policy;
+import dev.cajeta.primavera.security.SecurityException;
+import dev.cajeta.primavera.security.WebSecurity;
+import dev.cajeta.primavera.web.Connection;
+import dev.cajeta.primavera.web.Endpoints;
+import dev.cajeta.primavera.web.JsonBody;
+import dev.cajeta.primavera.web.RequestView;
+import dev.cajeta.primavera.web.Response;
+import dev.cajeta.primavera.web.WebServer;
+import dev.cajeta.primavera.web.WebServerBuilder;
+import dev.cajeta.primavera.web.WebSocketEndpoints;
+import dev.cajeta.unit.TestRunner;
+
+/**
+ * The static directory mount (primavera-live-sessions spec §5, plan Unit 8):
+ * GET and HEAD under the prefix serve files with types by extension, the
+ * prefix serves index.html, a missing file is 404, an escape (lexical or a
+ * symlink out) is 403, another method with no declared route is 405, a
+ * declared route wins over a file, everything shares one port, and the mount
+ * is a route the security rules address.
+ */
+public final class StaticSelfTest {
+    static String ROOT;
+
+    static void write(String path, String text) {
+        int8[] b #= text.toBytes();
+        File.writeAllBytes(path, b, (int64) b.count());
+    }
+
+    // Builds the fixture: <base>/site/{index.html, app.js, shadow.js,
+    // leak.txt -> ../outside/secret.txt} and <base>/outside/secret.txt.
+    static void fixture() {
+        String base #= "/tmp/primavera-static-" + Clock.nanoTime();
+        Path site #= Path.of(base + "/site");
+        site.mkdirs();
+        Path outside #= Path.of(base + "/outside");
+        outside.mkdirs();
+        StaticSelfTest.write(base + "/site/index.html", "<h1>home</h1>");
+        StaticSelfTest.write(base + "/site/app.js", "let x = 1;");
+        StaticSelfTest.write(base + "/site/shadow.js", "the file");
+        StaticSelfTest.write(base + "/outside/secret.txt", "secret");
+        Path leak #= Path.of(base + "/site/leak.txt");
+        Path target #= Path.of(base + "/outside/secret.txt");
+        leak.symlinkTo(target);
+        StaticSelfTest.ROOT #= base + "/site";
+    }
+
+    static void declared(RequestView q, Response r) {
+        r.text(200, "declared");
+    }
+
+    static void posted(RequestView q, Response r) {
+        r.text(201, "posted");
+    }
+
+    static void echo(Connection c, JsonBody b) {
+        c.send("{\"echo\":1}");
+    }
+
+    static #WebServer server() {
+        Endpoints api = heap Endpoints();
+        api.route("GET", "/shadow.js", (RequestView q, Response r) -> StaticSelfTest.declared(q, r));
+        api.route("POST", "/form", (RequestView q, Response r) -> StaticSelfTest.posted(q, r));
+        api.staticDir("/", StaticSelfTest.ROOT);
+        WebSocketEndpoints ws = heap WebSocketEndpoints();
+        ws.json("/ws", (Connection c, JsonBody b) -> StaticSelfTest.echo(c, b));
+        WebServerBuilder b #= WebServer.builder();
+        b.bind("127.0.0.1:0");
+        b.endpoints(#api);
+        b.websockets(#ws);
+        return b.build();
+    }
+
+    static async int32 serve(WebServer web) {
+        web.serve();
+        return 1;
+    }
+
+    static int32 status(HttpClient client, ClientResponse resp, String method, String url) {
+        ClientRequest req #= ClientRequest.of(method, url);
+        client.send(req, resp);
+        return resp.status();
+    }
+
+    static int32 check(boolean ok, String what, ClientResponse resp) {
+        if (ok) {
+            return 0;
+        }
+        String body #= resp.bodyString();
+        System.stdout.println("  static: " + what + ": status " + resp.status() + ", body " + body);
+        return 1;
+    }
+
+    static async int32 drive(int32 port) {
+        String base = "http://127.0.0.1:" + port;
+        HttpClient client = heap HttpClient();
+        ClientResponse resp = heap ClientResponse();
+        int32 failures = 0;
+
+        int32 s = StaticSelfTest.status(client, resp, "GET", base + "/");
+        String home #= resp.bodyString();
+        failures = failures + StaticSelfTest.check(s == 200 && home.equals("<h1>home</h1>"), "the prefix serves index.html", resp);
+        s = StaticSelfTest.status(client, resp, "GET", base + "/app.js");
+        String ctype #= resp.headerString("Content-Type");
+        String js #= resp.bodyString();
+        failures = failures + StaticSelfTest.check(s == 200 && js.equals("let x = 1;") && ctype.startsWith("text/javascript"),
+            "app.js serves as text/javascript", resp);
+        s = StaticSelfTest.status(client, resp, "GET", base + "/missing.css");
+        failures = failures + StaticSelfTest.check(s == 404, "a missing file is 404", resp);
+        s = StaticSelfTest.status(client, resp, "HEAD", base + "/app.js");
+        failures = failures + StaticSelfTest.check(s == 200 && resp.bodyLength() == 0, "HEAD answers headers and no body", resp);
+
+        s = StaticSelfTest.status(client, resp, "GET", base + "/../secret");
+        failures = failures + StaticSelfTest.check(s == 403 || s == 400, "a lexical escape is refused", resp);
+        s = StaticSelfTest.status(client, resp, "GET", base + "/%2e%2e/outside/secret.txt");
+        failures = failures + StaticSelfTest.check(s == 403, "an encoded escape is 403", resp);
+        s = StaticSelfTest.status(client, resp, "GET", base + "/leak.txt");
+        failures = failures + StaticSelfTest.check(s == 403, "a symlink out of the directory is 403", resp);
+
+        s = StaticSelfTest.status(client, resp, "POST", base + "/app.js");
+        failures = failures + StaticSelfTest.check(s == 405, "POST under the mount with no route is 405", resp);
+        s = StaticSelfTest.status(client, resp, "POST", base + "/form");
+        failures = failures + StaticSelfTest.check(s == 201, "a declared POST route under the mount runs", resp);
+        s = StaticSelfTest.status(client, resp, "GET", base + "/shadow.js");
+        String shadow #= resp.bodyString();
+        failures = failures + StaticSelfTest.check(s == 200 && shadow.equals("declared"), "a declared GET wins over the file", resp);
+
+        WebSocket ws #= WebSocket.connect("ws://127.0.0.1:" + port + "/ws");
+        ws.send("{\"x\":1}");
+        WsMessage m #= ws.receive();
+        String echoed #= m.text();
+        ws.close(1000, "done");
+        if (!echoed.equals("{\"echo\":1}")) {
+            System.stdout.println("  static: the WebSocket path on the same port answered " + echoed);
+            failures = failures + 1;
+        }
+        return failures;
+    }
+
+    static #String secured(boolean ruleTheMount) {
+        MemoryUserPool pool = heap MemoryUserPool();
+        MemoryUserDirectory dir = heap MemoryUserDirectory();
+        Endpoints api = heap Endpoints();
+        WebSecurity sec = heap WebSecurity(pool, dir);
+        api.route("GET", "/open", (RequestView q, Response r) -> StaticSelfTest.declared(q, r));
+        sec.rule(api.last(), Policy.anyone());
+        api.staticDir("/", StaticSelfTest.ROOT);
+        if (ruleTheMount) {
+            sec.rule(api.last(), Policy.anyone());
+        }
+        WebServerBuilder b #= WebServer.builder();
+        b.bind("127.0.0.1:0");
+        b.endpoints(#api);
+        b.guard(#sec);
+        try {
+            WebServer web #= b.build();
+            int32 port = web.port();
+            int32 code = 0;
+            scope {
+                Task<int32> sv = spawn serve(web);
+                HttpClient client = heap HttpClient();
+                ClientResponse resp = heap ClientResponse();
+                code = StaticSelfTest.status(client, resp, "GET", "http://127.0.0.1:" + port + "/app.js");
+                web.shutdown(Duration.ofSeconds(2));
+                await sv;
+            }
+            String out #= "served " + code;
+            return #out;
+        } catch (SecurityException e) {
+            String why = "" + e.getMessage();
+            return #why;
+        }
+    }
+
+    public static void add(TestRunner t) {
+        t.test("a static mount serves, jails, answers 405, yields to declared routes and shares the port", () -> {
+            StaticSelfTest.fixture();
+            scope {
+                WebServer web #= StaticSelfTest.server();
+                int32 port = web.port();
+                Task<int32> sv = spawn serve(web);
+                Task<int32> td = spawn drive(port);
+                int32 failures = await td;
+                web.shutdown(Duration.ofSeconds(2));
+                await sv;
+                SelfTest.req(failures == 0, "every static-mount check held (see the lines above)");
+            }
+        });
+
+        t.test("a static mount is a route the default-closed policy refuses until it has a rule", () -> {
+            String unruled #= StaticSelfTest.secured(false);
+            SelfTest.req(unruled.indexOf("has no security rule") >= 0, "an unruled mount refuses startup: " + unruled);
+            String ruled #= StaticSelfTest.secured(true);
+            SelfTest.req(ruled.equals("served 200"), "a ruled mount serves: " + ruled);
+        });
+    }
+}

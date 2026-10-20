@@ -1,0 +1,132 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.io.file.File;
+import cajeta.io.file.Path;
+import cajeta.lang.String;
+import dev.cajeta.http.HttpResponse;
+import dev.cajeta.http.middleware.StaticPath;
+
+/**
+ * A directory served under a path prefix (primavera-live-sessions spec §5),
+ * installed by {@link Endpoints#staticDir} as GET and HEAD routes on the
+ * prefix and on `<prefix>/{path:**}`, under one {@link RouteId}.
+ *
+ * The jail is cajeta-http's, in two layers. Lexically,
+ * `StaticPath.jail` percent-decodes and refuses `..`, encoded separators,
+ * backslashes and absolute paths, before the disk is touched. Canonically,
+ * the resolved file's realpath must stay under the directory's realpath,
+ * which defeats a symlink out. Either escape is 403; a path that names no
+ * file is 404; a directory serves its `index.html`. cajeta-http's
+ * `StaticFile` is a middleware over the whole request path, so it cannot
+ * serve under a prefix; this applies the same rules to the path after it.
+ */
+final class StaticMount {
+    String dir;
+    String canonDir;
+    boolean canonReady;
+
+    StaticMount(String dir) {
+        this.dir #= dir.substring(0, dir.byteLength());
+        this.canonDir = null;
+        this.canonReady = false;
+        return;
+    }
+
+    // The directory's realpath, computed once; null when it does not exist.
+    String canonRoot() {
+        if (!this.canonReady) {
+            Path p #= Path.of(this.dir);
+            if (p.exists()) {
+                this.canonDir #= StaticMount.canonical(this.dir);
+            }
+            this.canonReady = true;
+        }
+        return this.canonDir;
+    }
+
+    static #String canonical(String full) {
+        try {
+            Path c #= Path.of(full).canonical();
+            int8[] b = c.bytes;
+            int32 n = b.count();
+            int8[] copy = heap int8[n];
+            int32 i = 0;
+            while (i < n) {
+                copy[i] = b[i];
+                i = i + 1;
+            }
+            return heap String(#copy, n);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    static boolean under(String file, String root) {
+        if (!file.startsWith(root)) {
+            return false;
+        }
+        if (file.byteLength() == root.byteLength()) {
+            return true;
+        }
+        int8 next = file.byteAt(root.byteLength());
+        return next == (int8) 47 || next == (int8) 92;
+    }
+
+    static String contentType(String path) {
+        if (path.endsWith(".html") || path.endsWith(".htm")) { return "text/html; charset=utf-8"; }
+        if (path.endsWith(".js") || path.endsWith(".mjs")) { return "text/javascript; charset=utf-8"; }
+        if (path.endsWith(".css")) { return "text/css; charset=utf-8"; }
+        if (path.endsWith(".json") || path.endsWith(".map")) { return "application/json"; }
+        if (path.endsWith(".svg")) { return "image/svg+xml"; }
+        if (path.endsWith(".png")) { return "image/png"; }
+        if (path.endsWith(".jpg") || path.endsWith(".jpeg")) { return "image/jpeg"; }
+        if (path.endsWith(".gif")) { return "image/gif"; }
+        if (path.endsWith(".webp")) { return "image/webp"; }
+        if (path.endsWith(".ico")) { return "image/x-icon"; }
+        if (path.endsWith(".wasm")) { return "application/wasm"; }
+        if (path.endsWith(".woff2")) { return "font/woff2"; }
+        if (path.endsWith(".woff")) { return "font/woff"; }
+        if (path.endsWith(".txt")) { return "text/plain; charset=utf-8"; }
+        return "application/octet-stream";
+    }
+
+    static void serve(StaticMount m, RequestView q, Response r) {
+        HttpResponse raw = r.raw();
+        // The prefix's own route has no `path` parameter.
+        String rest #= q.paramString("path");
+        String asked #= rest == null ? "/" : "/" + rest;
+        String jailed #= StaticPath.jail(asked);
+        if (jailed == null) {
+            raw.status(403);
+            return;
+        }
+        String full #= m.dir + "/" + jailed;
+        if (jailed.byteLength() == 0) {
+            full #= m.dir.substring(0, m.dir.byteLength());
+        }
+        Path p #= Path.of(full);
+        if (p.isDir()) {
+            full = full + "/index.html";
+            p #= Path.of(full);
+        }
+        if (!p.exists() || !p.isFile()) {
+            raw.status(404);
+            return;
+        }
+        String root = m.canonRoot();
+        if (root == null) {
+            raw.status(404);
+            return;
+        }
+        String canon #= StaticMount.canonical(full);
+        if (canon == null || !StaticMount.under(canon, root)) {
+            raw.status(403);
+            return;
+        }
+        int8[] bytes #= File.readAllBytes(full);
+        raw.status(200);
+        raw.setHeader("Content-Type", StaticMount.contentType(full));
+        raw.body(bytes, bytes.count());
+        return;
+    }
+}

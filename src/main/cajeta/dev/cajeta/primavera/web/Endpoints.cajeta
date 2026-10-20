@@ -17,10 +17,13 @@ public final class Endpoints {
 
     Router router;
     ArrayList<Endpoint> list;
+    // The static mounts, which their routes' handlers borrow.
+    ArrayList<StaticMount> mounts;
 
     public Endpoints() {
         this.router = heap Router();
         this.list = heap ArrayList<Endpoint>();
+        this.mounts = heap ArrayList<StaticMount>();
         return;
     }
 
@@ -96,6 +99,49 @@ public final class Endpoints {
     }
 
     /** How many endpoints are registered. */
+    /**
+     * Serves the files under `dir` at `prefix` (primavera-live-sessions spec
+     * §5): GET and HEAD resolve to a file under the directory, with a type by
+     * extension; the prefix itself serves `index.html`; a missing file is
+     * 404; a path that escapes the directory, lexically or through a symlink
+     * that resolves outside it, is 403. Another method under the prefix
+     * answers 405 unless a declared route takes it, and a declared route wins
+     * over a file of the same path, since the router picks the most specific
+     * match. The mount is one route: `last()` is its {@link RouteId}, so a
+     * security rule addresses it like any other.
+     */
+    public Endpoints staticDir(String prefix, String dir) {
+        StaticMount m = heap StaticMount(dir);
+        this.mounts.add(#m);
+        StaticMount mount = this.mounts.get(this.mounts.count() - 1);
+        String base #= prefix.substring(0, prefix.byteLength());
+        if (base.endsWith("/")) {
+            base #= base.substring(0, base.byteLength() - 1);
+        }
+        String rest #= base + "/{path:**}";
+        String exact #= base.byteLength() == 0 ? "/" : base.substring(0, base.byteLength());
+
+        Endpoint first = heap Endpoint(BodyMode.NONE());
+        first.plain #= (RequestView q, Response r) -> StaticMount.serve(mount, q, r);
+        first.id #= heap RouteId("GET", rest);
+        this.addWith("GET", rest, #first);
+        RouteId id = this.list.get(this.list.count() - 1).id;
+        this.addShared("HEAD", rest, id, mount);
+        this.addShared("GET", exact, id, mount);
+        this.addShared("HEAD", exact, id, mount);
+        return this;
+    }
+
+    // One more route of a static mount, under the mount's identity, which
+    // the first route owns and this one borrows.
+    void addShared(String method, String pattern, RouteId id, StaticMount mount) {
+        Endpoint e = heap Endpoint(BodyMode.NONE());
+        e.plain #= (RequestView q, Response r) -> StaticMount.serve(mount, q, r);
+        e.id #= id;
+        this.addWith(method, pattern, #e);
+        return;
+    }
+
     public int32 count() { return this.list.count(); }
 
     /** The identity of the endpoint registered last, for a security rule. */

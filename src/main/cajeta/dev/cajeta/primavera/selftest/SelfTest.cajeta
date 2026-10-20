@@ -336,6 +336,7 @@ public class SelfTest {
         SessionWsSelfTest.add(t);
         HooksSelfTest.add(t);
         QueueSelfTest.add(t);
+        StaticSelfTest.add(t);
         CodecSelfTest.add(t);
         IdentitySelfTest.add(t);
         SecuritySelfTest.add(t);
