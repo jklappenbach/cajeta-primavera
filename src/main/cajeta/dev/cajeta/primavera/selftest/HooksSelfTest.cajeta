@@ -96,7 +96,7 @@ public final class HooksSelfTest {
 
     static #WebServer server() {
         WebSocketEndpoints ws = heap WebSocketEndpoints();
-        ws.queueBound(4);
+        ws.queueBytes(4096);
         ws.overflowCode(1008);
         ws.json("/hooked", (Connection c) -> HooksSelfTest.opened(c),
                 (Connection c, JsonBody b) -> HooksSelfTest.message(c, b),

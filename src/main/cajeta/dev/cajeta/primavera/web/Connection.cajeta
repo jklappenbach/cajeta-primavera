@@ -28,7 +28,8 @@ import dev.cajeta.http.ws.WsMessage;
  * {@link CloseException} with its code, anything else with 1011. The peer
  * gets the code and no detail.
  *
- * Sends are queued, at most `bound` deep, and written by the connection's
+ * Sends are queued in a ring of at most `bound` bytes ({@link SendRing}:
+ * each message counts its payload plus 4) and written by the connection's
  * writer fiber. A send that finds the queue full aborts the connection with
  * the overflow code (spec §6.5).
  */
@@ -42,9 +43,7 @@ public class Connection implements WebSocketHandler {
     JsonBody body;
 
     Lock gate;
-    SendSlot[] ring;
-    int32 head;
-    int32 queued;
+    SendRing ring;
     int32 bound;
     int32 overflow;
     boolean signalled;
@@ -66,14 +65,7 @@ public class Connection implements WebSocketHandler {
         this.ws = null;
         this.body = heap JsonBody();
         this.gate = heap Lock();
-        this.ring = heap SendSlot[bound];
-        int32 i = 0;
-        while (i < bound) {
-            this.ring[i] = heap SendSlot();
-            i = i + 1;
-        }
-        this.head = 0;
-        this.queued = 0;
+        this.ring = heap SendRing(bound);
         this.bound = bound;
         this.overflow = overflow;
         this.signalled = false;
@@ -225,14 +217,13 @@ public class Connection implements WebSocketHandler {
             LockGuard g #= this.gate.acquire();
             if (this.closing) {
                 queuedIt = false;
-            } else if (this.queued == this.bound) {
+            } else if (!this.ring.push(text)) {
+                // Past the bound, or one message larger than it (spec §4.2.1,
+                // §4.3): refused, and the connection closes.
                 this.closing = true;
                 abort = true;
             } else {
-                int32 at = (this.head + this.queued) % this.bound;
-                this.ring[at].fill(text);
-                this.queued = this.queued + 1;
-                this.registry.notePeak(this.queued);
+                this.registry.notePeak(this.ring.queuedBytes());
                 queuedIt = true;
                 if (!this.signalled) {
                     this.signalled = true;
@@ -279,25 +270,26 @@ public class Connection implements WebSocketHandler {
         boolean more = true;
         boolean ok = true;
         while (more && ok) {
-            SendSlot s = null;
+            int32 off = -1;
+            int32 len = 0;
             {
                 LockGuard g #= this.gate.acquire();
-                if (this.queued == 0) {
-                    more = false;
-                } else {
-                    s = this.ring[this.head];
-                }
+                off = this.ring.peekOffset();
+                len = this.ring.peekLength();
             }
-            if (more) {
+            if (off < 0) {
+                more = false;
+            } else {
+                // The record stays put until pop, so it is sent in place,
+                // outside the gate.
                 try {
-                    this.ws.sendText(s.bytes, 0, s.len);
+                    this.ws.sendText(this.ring.bytes(), off, len);
                 } catch (Exception e) {
                     ok = false;
                 }
                 if (ok) {
                     LockGuard g #= this.gate.acquire();
-                    this.head = (this.head + 1) % this.bound;
-                    this.queued = this.queued - 1;
+                    this.ring.pop();
                 }
             }
         }

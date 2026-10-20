@@ -145,6 +145,9 @@ public final class ConnectionRegistry {
     /** The close code of the connection that closed last, or 0. */
     public int32 lastCloseCode() { return this.lastCode; }
 
-    /** The most messages any connection has had queued. */
-    public int32 peakQueued() { return this.peak; }
+    /**
+     * The most bytes any connection has had queued, each message counting its
+     * payload plus 4 (spec §4.4).
+     */
+    public int32 peakQueuedBytes() { return this.peak; }
 }

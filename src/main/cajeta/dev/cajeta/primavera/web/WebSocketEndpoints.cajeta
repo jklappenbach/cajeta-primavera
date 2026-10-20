@@ -11,8 +11,10 @@ import dev.cajeta.http.ws.WsUpgrade;
  * connection's buffer and handed to the path's handler. The HTTP pipeline is
  * left as it was built (spec §7.17).
  *
- * Every connection has a send queue of `queueBound` messages. A peer that
- * falls further behind is closed with `overflowCode` (spec §6.5, §10.5).
+ * Every connection has a send queue of `queueBytes` bytes, each message
+ * counting its payload plus 4 (1 MiB unless set). A send that would pass the
+ * bound, or one message larger than it, is refused and the connection closes
+ * with `overflowCode` (primavera-live-sessions spec §4).
  */
 public final class WebSocketEndpoints {
     ArrayList<WebSocketEndpoint> list;
@@ -21,16 +23,23 @@ public final class WebSocketEndpoints {
 
     public WebSocketEndpoints() {
         this.list = heap ArrayList<WebSocketEndpoint>();
-        this.bound = 64;
+        this.bound = 1048576;
         this.overflow = 1008;
         return;
     }
 
-    /** Messages a connection may have queued before it is closed (64 unless set). */
-    public WebSocketEndpoints queueBound(int32 n) {
+    /**
+     * Bytes a connection may have queued before a send is refused and it is
+     * closed: each message counts its payload plus 4, framing excluded
+     * (1 MiB unless set). Replaces 0.4.0's message-count `queueBound(n)`.
+     */
+    public WebSocketEndpoints queueBytes(int32 n) {
         this.bound = n;
         return this;
     }
+
+    /** The send bound in bytes. */
+    public int32 queueBytesBound() { return this.bound; }
 
     /** The close code for a connection whose queue overflows (1008, policy violation, unless set). */
     public WebSocketEndpoints overflowCode(int32 code) {

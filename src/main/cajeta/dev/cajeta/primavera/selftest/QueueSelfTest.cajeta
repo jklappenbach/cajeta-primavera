@@ -1,0 +1,299 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.concurrent.AtomicInt32;
+import cajeta.concurrent.Fiber;
+import cajeta.io.net.SocketAddress;
+import cajeta.io.net.TcpStream;
+import cajeta.lang.String;
+import cajeta.time.Clock;
+import cajeta.time.Duration;
+import dev.cajeta.http.ws.WebSocket;
+import dev.cajeta.http.ws.WsMessage;
+import dev.cajeta.primavera.context.SessionScope;
+import dev.cajeta.primavera.context.SessionState;
+import dev.cajeta.primavera.web.Connection;
+import dev.cajeta.primavera.web.ConnectionRegistry;
+import dev.cajeta.primavera.web.Endpoints;
+import dev.cajeta.primavera.web.JsonBody;
+import dev.cajeta.primavera.web.SendRing;
+import dev.cajeta.primavera.web.WebServer;
+import dev.cajeta.primavera.web.WebServerBuilder;
+import dev.cajeta.primavera.web.WebSocketEndpoints;
+import dev.cajeta.unit.TestRunner;
+
+/**
+ * The send queue bounded in bytes (primavera-live-sessions spec §4, §6.3,
+ * decision §7.2, plan Unit 7): each queued message counts its payload plus 4
+ * bytes; under the bound a send never parks; a send that would pass it, or a
+ * single message larger than it, is refused and closes the connection 1008.
+ */
+public final class QueueSelfTest {
+    static AtomicInt32 closes = heap AtomicInt32(0);
+    static int32 lastCode;
+    static int64 lastId;
+    static ConnectionRegistry REG;
+
+    static void opened(Connection c) {
+        QueueSelfTest.lastId = c.id();
+    }
+
+    static void message(Connection c, JsonBody b) {
+        return;
+    }
+
+    static void closed(Connection c, int32 code) {
+        QueueSelfTest.lastCode = code;
+        QueueSelfTest.closes.fetchAdd(1);
+    }
+
+    static #String repeat(String unit, int32 n) {
+        String s = "";
+        int32 i = 0;
+        while (i < n) {
+            s = s + unit;
+            i = i + 1;
+        }
+        String out #= s.substring(0, s.byteLength());
+        return #out;
+    }
+
+    // The record at the head of `r`, decoded.
+    static #String head(SendRing r) {
+        int32 off = r.peekOffset();
+        int32 len = r.peekLength();
+        return JsonBody.decode(r.bytes(), off, off + len);
+    }
+
+    static #WebServer server(int32 queueBytes) {
+        WebSocketEndpoints ws = heap WebSocketEndpoints();
+        ws.queueBytes(queueBytes);
+        ws.json("/q", (Connection c) -> QueueSelfTest.opened(c),
+                (Connection c, JsonBody b) -> QueueSelfTest.message(c, b),
+                (Connection c, int32 code) -> QueueSelfTest.closed(c, code));
+        WebServerBuilder bld #= WebServer.builder();
+        bld.bind("127.0.0.1:0");
+        bld.endpoints(heap Endpoints());
+        bld.websockets(#ws);
+        return bld.build();
+    }
+
+    static async int32 serve(WebServer web) {
+        web.serve();
+        return 1;
+    }
+
+    static #TcpStream rawUpgrade(int32 port) {
+        TcpStream peer #= TcpStream.connectAsync(SocketAddress.parse("127.0.0.1:" + port));
+        String hs = "GET /q HTTP/1.1\r\nHost: t\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+            + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+        int8[] hb #= hs.toBytes();
+        peer.writeAllAsync(hb, (int64) 0, (int64) hs.byteLength());
+        return #peer;
+    }
+
+    static void awaitOpen(WebServer web) {
+        int32 w = 0;
+        while (web.connections().count() == 0 && w < 300) {
+            Fiber.sleep(Duration.ofMillis(10));
+            w = w + 1;
+        }
+    }
+
+    static void awaitClosed(WebServer web) {
+        int32 w = 0;
+        while ((web.connections().count() != 0 || QueueSelfTest.closes.load() == 0) && w < 300) {
+            Fiber.sleep(Duration.ofMillis(10));
+            w = w + 1;
+        }
+    }
+
+    static int32 check(boolean ok, String what) {
+        if (ok) {
+            return 0;
+        }
+        System.stdout.println("  queue: " + what + ": last code " + QueueSelfTest.lastCode
+            + ", closes " + QueueSelfTest.closes.load());
+        return 1;
+    }
+
+    // 7.1.1: a peer that pauses gets everything once it reads, while the
+    // queued payload never passed the 4 KiB bound.
+    static async int32 pausedReader(int32 port, WebServer web) {
+        int32 failures = 0;
+        WebSocket ws #= WebSocket.connect("ws://127.0.0.1:" + port + "/q");
+        QueueSelfTest.awaitOpen(web);
+        int32 i = 0;
+        boolean all = true;
+        // 40 messages of 96 bytes: 40 x 100 = 4000 counted bytes, under 4096.
+        while (i < 40) {
+            String body #= "{\"n\":" + (i < 10 ? "0" : "") + i + ",\"p\":\"" + QueueSelfTest.repeat("x", 83) + "\"}";
+            all = all && web.connections().send(QueueSelfTest.lastId, body);
+            i = i + 1;
+        }
+        failures = failures + QueueSelfTest.check(all, "every send under the bound queued");
+        i = 0;
+        boolean inOrder = true;
+        while (i < 40) {
+            WsMessage m #= ws.receive();
+            String t #= m.text();
+            String want #= "{\"n\":" + (i < 10 ? "0" : "") + i + ",";
+            inOrder = inOrder && t.startsWith(want);
+            i = i + 1;
+        }
+        failures = failures + QueueSelfTest.check(inOrder, "the paused reader got all 40, in order");
+        failures = failures + QueueSelfTest.check(web.connections().peakQueuedBytes() <= 4096, "the peak stayed within 4 KiB");
+        ws.close(1000, "done");
+        QueueSelfTest.awaitClosed(web);
+        return failures;
+    }
+
+    // 7.1.2 and 7.1.3: overflow and an oversized single message close 1008.
+    static async int32 overflow(int32 port, WebServer web) {
+        int32 failures = 0;
+        String sid #= SessionScope.open();
+
+        QueueSelfTest.closes.store(0);
+        TcpStream slow #= QueueSelfTest.rawUpgrade(port);
+        QueueSelfTest.awaitOpen(web);
+        String chunk #= "{\"p\":\"" + QueueSelfTest.repeat("y", 3000) + "\"}";
+        int32 sent = 0;
+        boolean refused = false;
+        while (!refused && sent < 100000) {
+            refused = !web.connections().send(QueueSelfTest.lastId, chunk);
+            sent = sent + 1;
+        }
+        QueueSelfTest.awaitClosed(web);
+        failures = failures + QueueSelfTest.check(refused, "a send past the bound was refused");
+        failures = failures + QueueSelfTest.check(QueueSelfTest.lastCode == 1008, "the overflow closed 1008");
+        failures = failures + QueueSelfTest.check(SessionScope.lookup(sid) == SessionState.OPEN, "the session stays OPEN");
+        failures = failures + QueueSelfTest.check(web.connections().peakQueuedBytes() <= 4096, "the peak stayed within 4 KiB");
+        slow.close();
+
+        QueueSelfTest.closes.store(0);
+        WebSocket ws #= WebSocket.connect("ws://127.0.0.1:" + port + "/q");
+        QueueSelfTest.awaitOpen(web);
+        String huge #= "{\"p\":\"" + QueueSelfTest.repeat("z", 5000) + "\"}";
+        boolean took = web.connections().send(QueueSelfTest.lastId, huge);
+        QueueSelfTest.awaitClosed(web);
+        failures = failures + QueueSelfTest.check(!took && QueueSelfTest.lastCode == 1008, "a message larger than the bound is refused and closes 1008");
+        SessionScope.invalidate(sid);
+        return failures;
+    }
+
+    // 7.1.5: under a 1 MiB bound, 1000 sends to a raw peer that never reads
+    // all queue, and none parks the sender.
+    static async int32 neverParks(int32 port, WebServer web) {
+        int32 failures = 0;
+        QueueSelfTest.closes.store(0);
+        TcpStream silent #= QueueSelfTest.rawUpgrade(port);
+        QueueSelfTest.awaitOpen(web);
+        String msg #= "{\"p\":\"" + QueueSelfTest.repeat("w", 90) + "\"}";
+        int64 start = Clock.millisTime();
+        int32 ok = 0;
+        int32 i = 0;
+        while (i < 1000) {
+            if (web.connections().send(QueueSelfTest.lastId, msg)) {
+                ok = ok + 1;
+            }
+            i = i + 1;
+        }
+        int64 took = Clock.millisTime() - start;
+        System.stdout.println("  queue: 1000 sends to a silent peer took " + took + " ms, peak "
+            + web.connections().peakQueuedBytes() + " bytes");
+        failures = failures + QueueSelfTest.check(ok == 1000, "all 1000 sends queued");
+        failures = failures + QueueSelfTest.check(took < (int64) 2000, "no send parked the sender");
+        silent.close();
+        QueueSelfTest.awaitClosed(web);
+        return failures;
+    }
+
+    public static void add(TestRunner t) {
+        t.test("a message counts its payload plus 4 bytes: k x (m + 4) takes k messages of m, not one more", () -> {
+            SendRing r = heap SendRing(5 * (10 + 4));
+            int32 i = 0;
+            boolean all = true;
+            while (i < 5) {
+                all = all && r.push("abcdefghij");
+                i = i + 1;
+            }
+            SelfTest.req(all, "five 10-byte messages fit in 70 bytes");
+            SelfTest.req(!r.push("abcdefghij"), "the sixth is refused");
+            SelfTest.req(r.queuedBytes() == 70 && r.peakBytes() == 70, "70 bytes queued at the peak");
+        });
+
+        t.test("a single message larger than the bound is refused", () -> {
+            SendRing r = heap SendRing(64);
+            String big #= QueueSelfTest.repeat("q", 61);
+            SelfTest.req(!r.push(big), "61 + 4 bytes does not fit 64");
+            SelfTest.req(r.push(QueueSelfTest.repeat("q", 60)), "60 + 4 does");
+        });
+
+        t.test("the ring keeps order across a wrap and reports its high-water mark", () -> {
+            SendRing r = heap SendRing(40);
+            SelfTest.req(r.push("AAAAAAAAAA") && r.push("BBBBBBBBBB"), "A and B take 28 bytes");
+            String a #= QueueSelfTest.head(r);
+            SelfTest.req(a.equals("AAAAAAAAAA"), "A first");
+            r.pop();
+            SelfTest.req(r.push("CCCCCCCC"), "C fits the 12 bytes left at the end");
+            String b #= QueueSelfTest.head(r);
+            SelfTest.req(b.equals("BBBBBBBBBB"), "then B");
+            r.pop();
+            SelfTest.req(r.push("DDDDDDDDDD"), "D wraps to the start");
+            String c #= QueueSelfTest.head(r);
+            SelfTest.req(c.equals("CCCCCCCC"), "then C");
+            r.pop();
+            String d #= QueueSelfTest.head(r);
+            SelfTest.req(d.equals("DDDDDDDDDD"), "then D, across the wrap");
+            r.pop();
+            SelfTest.req(r.peekOffset() < 0 && r.queuedBytes() == 0, "empty");
+            SelfTest.req(r.peakBytes() == 28, "the high-water mark is 28 bytes");
+        });
+
+        t.test("the default send bound is 1 MiB", () -> {
+            WebSocketEndpoints ws = heap WebSocketEndpoints();
+            SelfTest.req(ws.queueBytesBound() == 1048576, "1 MiB");
+        });
+
+        t.test("a paused reader under a 4 KiB bound receives everything once it reads", () -> {
+            scope {
+                WebServer web #= QueueSelfTest.server(4096);
+                QueueSelfTest.REG #= web.connections();
+                int32 port = web.port();
+                Task<int32> sv = spawn serve(web);
+                Task<int32> td = spawn pausedReader(port, web);
+                int32 failures = await td;
+                web.shutdown(Duration.ofSeconds(2));
+                await sv;
+                SelfTest.req(failures == 0, "every paused-reader check held (see the lines above)");
+            }
+        });
+
+        t.test("past the 4 KiB bound, or one message over it, the send is refused and the connection closes 1008", () -> {
+            scope {
+                WebServer web #= QueueSelfTest.server(4096);
+                QueueSelfTest.REG #= web.connections();
+                int32 port = web.port();
+                Task<int32> sv = spawn serve(web);
+                Task<int32> td = spawn overflow(port, web);
+                int32 failures = await td;
+                web.shutdown(Duration.ofSeconds(2));
+                await sv;
+                SelfTest.req(failures == 0, "every overflow check held (see the lines above)");
+            }
+        });
+
+        t.test("under a 1 MiB bound a sender never parks on a peer that never reads", () -> {
+            scope {
+                WebServer web #= QueueSelfTest.server(1048576);
+                QueueSelfTest.REG #= web.connections();
+                int32 port = web.port();
+                Task<int32> sv = spawn serve(web);
+                Task<int32> td = spawn neverParks(port, web);
+                int32 failures = await td;
+                web.shutdown(Duration.ofSeconds(2));
+                await sv;
+                SelfTest.req(failures == 0, "every never-parks check held (see the lines above)");
+            }
+        });
+    }
+}

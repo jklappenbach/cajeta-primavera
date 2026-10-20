@@ -60,11 +60,11 @@ public final class WsSelfTest {
         return;
     }
 
-    static #WebServer server(int32 queueBound) {
+    static #WebServer server(int32 queueBytes) {
         Endpoints api = heap Endpoints();
         api.route("GET", "/hello", (RequestView q, Response r) -> WsSelfTest.hello(q, r));
         WebSocketEndpoints ws = heap WebSocketEndpoints();
-        ws.queueBound(queueBound);
+        ws.queueBytes(queueBytes);
         ws.overflowCode(1008);
         ws.json("/echo", (Connection c, JsonBody b) -> WsSelfTest.echo(c, b));
         ws.json("/fail", (Connection c, JsonBody b) -> WsSelfTest.fail(c, b));
@@ -239,7 +239,7 @@ public final class WsSelfTest {
             settle = settle + 1;
         }
         System.stdout.println("  slow reader: " + sent + " sends, " + openAfterSends
-            + " open after them, peak queued " + web.connections().peakQueued()
+            + " open after them, peak queued " + web.connections().peakQueuedBytes() + " bytes"
             + ", " + web.connections().count() + " open after " + (settle * 10)
             + " ms more, close code " + web.connections().lastCloseCode());
         int32 failures = 0;
@@ -251,8 +251,8 @@ public final class WsSelfTest {
             System.stdout.println("  the overflow closed with " + web.connections().lastCloseCode());
             failures = failures + 1;
         }
-        if (web.connections().peakQueued() > 4) {
-            System.stdout.println("  the queue held " + web.connections().peakQueued() + ", over its bound of 4");
+        if (web.connections().peakQueuedBytes() > 262144) {
+            System.stdout.println("  the queue held " + web.connections().peakQueuedBytes() + " bytes, over its bound of 262144");
             failures = failures + 1;
         }
         peer.close();
@@ -262,7 +262,7 @@ public final class WsSelfTest {
     static void add(TestRunner t) {
         t.test("WebSocket: pipelines, close codes, Connection scope, registry, broadcast", () -> {
             scope {
-                WebServer web #= WsSelfTest.server(64);
+                WebServer web #= WsSelfTest.server(1048576);
                 int32 port = web.port();
                 Task<int32> sv = spawn serve(web);
                 Task<int32> td = spawn drive(port, web);
@@ -274,7 +274,7 @@ public final class WsSelfTest {
         });
         t.test("WebSocket: a reader that never reads is closed at the queue bound", () -> {
             scope {
-                WebServer web #= WsSelfTest.server(4);
+                WebServer web #= WsSelfTest.server(262144);
                 int32 port = web.port();
                 Task<int32> sv = spawn serve(web);
                 Task<int32> td = spawn slowReader(port, web);

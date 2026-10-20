@@ -1,0 +1,164 @@
+package dev.cajeta.primavera.web;
+
+import cajeta.lang.String;
+
+/**
+ * A connection's send queue: one contiguous ring of `capacity` bytes holding
+ * `[len][payload]` records, oldest first (primavera-live-sessions spec §4).
+ * Each record costs its payload plus a 4-byte length, so the capacity is the
+ * queue's memory whatever the message sizes.
+ *
+ * A record is never split: one that would run past the end is written at the
+ * start behind a skip marker, and the bytes it skips count as used until the
+ * reader passes them. So a ring that has wrapped can refuse a record whose
+ * payload alone would fit in its free bytes; from empty, `capacity` bytes
+ * take exactly `capacity` bytes of records.
+ *
+ * Not thread-safe: a {@link Connection} calls it under its gate, and its
+ * writer reads the head record in place (`bytes`, `peekOffset`,
+ * `peekLength`) outside the gate, which is safe because a record stays put
+ * until `pop`. Public for primavera's self-tests.
+ */
+public final class SendRing {
+    int8[] buf;
+    int32 cap;
+    int32 head;
+    int32 tail;
+    // Bytes in use, skip waste included.
+    int32 used;
+    // Bytes the queued records count (payload plus 4 each), and their peak.
+    int32 counted;
+    int32 peak;
+
+    public SendRing(int32 capacity) {
+        this.buf = heap int8[capacity];
+        this.cap = capacity;
+        this.head = 0;
+        this.tail = 0;
+        this.used = 0;
+        this.counted = 0;
+        this.peak = 0;
+        return;
+    }
+
+    void putLen(int32 at, int32 v) {
+        this.buf[at] = (int8) (v >> 24);
+        this.buf[at + 1] = (int8) (v >> 16);
+        this.buf[at + 2] = (int8) (v >> 8);
+        this.buf[at + 3] = (int8) v;
+        return;
+    }
+
+    int32 getLen(int32 at) {
+        return ((((int32) this.buf[at]) & 255) << 24) | ((((int32) this.buf[at + 1]) & 255) << 16)
+            | ((((int32) this.buf[at + 2]) & 255) << 8) | (((int32) this.buf[at + 3]) & 255);
+    }
+
+    /**
+     * Appends `text` as one record; false, appending nothing, when it does
+     * not fit.
+     */
+    public boolean push(String text) {
+        int32 n = text.byteLength();
+        int32 r = n + 4;
+        if (r > this.cap) {
+            return false;
+        }
+        if (this.used == 0) {
+            this.head = 0;
+            this.tail = 0;
+        }
+        int32 at = -1;
+        if (this.used == 0 || this.tail > this.head) {
+            // Free bytes run from the tail to the end, then from the start
+            // to the head.
+            if (this.cap - this.tail >= r) {
+                at = this.tail;
+            } else if (this.head >= r) {
+                int32 waste = this.cap - this.tail;
+                if (waste >= 4) {
+                    this.putLen(this.tail, -1);
+                }
+                this.used = this.used + waste;
+                at = 0;
+            }
+        } else if (this.head - this.tail >= r) {
+            // Wrapped: free bytes run from the tail to the head.
+            at = this.tail;
+        }
+        if (at < 0) {
+            return false;
+        }
+        this.putLen(at, n);
+        int32 i = 0;
+        while (i < n) {
+            this.buf[at + 4 + i] = text.byteAt(i);
+            i = i + 1;
+        }
+        this.tail = at + r;
+        this.used = this.used + r;
+        this.counted = this.counted + r;
+        if (this.counted > this.peak) {
+            this.peak = this.counted;
+        }
+        return true;
+    }
+
+    // Moves the head past a skip marker or a too-short tail, if it is at one.
+    void skip() {
+        if (this.used == 0) {
+            return;
+        }
+        if (this.cap - this.head < 4 || this.getLen(this.head) < 0) {
+            this.used = this.used - (this.cap - this.head);
+            this.head = 0;
+        }
+        return;
+    }
+
+    /** Where the oldest record's payload starts in {@link #bytes}, or -1 when empty. */
+    public int32 peekOffset() {
+        this.skip();
+        if (this.used == 0) {
+            return -1;
+        }
+        return this.head + 4;
+    }
+
+    /** The oldest record's payload length, or 0 when empty. */
+    public int32 peekLength() {
+        this.skip();
+        if (this.used == 0) {
+            return 0;
+        }
+        return this.getLen(this.head);
+    }
+
+    /** Drops the oldest record. */
+    public void pop() {
+        this.skip();
+        if (this.used == 0) {
+            return;
+        }
+        int32 r = this.getLen(this.head) + 4;
+        this.head = this.head + r;
+        this.used = this.used - r;
+        this.counted = this.counted - r;
+        if (this.used == 0) {
+            this.head = 0;
+            this.tail = 0;
+        }
+        return;
+    }
+
+    /** The ring's bytes, for the writer to send a record in place. */
+    public int8[] bytes() { return this.buf; }
+
+    /** Bytes the queued records count now. */
+    public int32 queuedBytes() { return this.counted; }
+
+    /** The most bytes the queued records have counted at once. */
+    public int32 peakBytes() { return this.peak; }
+
+    public int32 capacity() { return this.cap; }
+}

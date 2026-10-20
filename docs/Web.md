@@ -159,10 +159,19 @@ web.connections().broadcast("{\"registered\":\"ada\"}");
 - `web.connections()` addresses open connections by id (`send(id, text)`) or
   all at once (`broadcast`). A connection leaves it when it closes.
 - Sends are queued and written by the connection's own writer fiber, which
-  runs inside `WebServer.serve`. The queue holds `queueBound` messages (64 by
-  default). A peer that falls further behind is closed with `overflowCode`
-  (1008 by default), so a slow reader stalls nobody else and memory does not
-  grow.
+  runs inside `WebServer.serve`. The queue is bounded in bytes:
+  `queueBytes(n)` (1 MiB by default), each message counting its payload plus
+  4 bytes, so the bound is the queue's memory. Under the bound a send never
+  parks the caller. A send that would pass it, or one message larger than it,
+  is refused (`send` returns false) and the connection is closed with
+  `overflowCode` (1008 by default), so a slow reader stalls nobody else.
+  `web.connections().peakQueuedBytes()` reports the high-water mark. In 0.4.0
+  the bound was a message count, `queueBound(n)`, with `peakQueued()`.
+- A path declared with `json(path, onOpen, onMessage, onClose)` runs `onOpen`
+  once the connection is in the registry and before its first message, and
+  `onClose` exactly once with the close code, whatever the cause, before the
+  connection's components drop. Both run in its `Connection` scope. Server
+  shutdown aborts each connection with 1001, which the close hook sees.
 - A handler that throws closes its connection: 1007 for a body that is not a
   JSON object, 1009 for an oversized message, the code of a `CloseException`,
   and 1011 for anything else. The peer gets the code and no detail.
