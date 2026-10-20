@@ -5,6 +5,7 @@ import cajeta.concurrent.Channel;
 import cajeta.concurrent.Fiber;
 import cajeta.io.net.SocketAddress;
 import cajeta.lang.String;
+import cajeta.time.Clock;
 import cajeta.time.Duration;
 import dev.cajeta.http.HttpRequest;
 import dev.cajeta.http.HttpResponse;
@@ -127,18 +128,20 @@ public final class WebServer {
         return q;
     }
 
-    // Sweeps the ambient store every `every` ms until shutdown. It sleeps in
-    // steps of at most 20 ms, so shutdown never waits out a long interval.
+    // Sweeps the ambient store every `every` ms until shutdown, timing the
+    // interval on the clock. It sleeps in steps of at most 50 ms, so shutdown
+    // never waits out a long interval.
     static async int32 sweeper(WebServer w, int64 every) {
-        int64 step = every < (int64) 20 ? every : (int64) 20;
-        int64 waited = 0;
+        int64 step = every < (int64) 50 ? every : (int64) 50;
+        int64 last = Clock.nanoTime();
+        int64 everyNs = every * (int64) 1000000;
         while (w.sweepStop.load() == 0) {
             Fiber.sleep(Duration.ofMillis(step));
-            waited = waited + step;
-            if (waited >= every && w.sweepStop.load() == 0) {
+            int64 now = Clock.nanoTime();
+            if (now - last >= everyNs && w.sweepStop.load() == 0) {
                 SessionScope.evictExpired();
                 w.sweepCount.fetchAdd(1);
-                waited = 0;
+                last = now;
             }
         }
         return 1;
@@ -173,13 +176,23 @@ public final class WebServer {
     }
 
     /**
-     * Stops accepting, closes every WebSocket connection with 1001, and waits
-     * up to `deadline` for requests in flight.
+     * Stops accepting, aborts every WebSocket connection with 1001 and waits
+     * for their close hooks, then waits up to `deadline` for requests in
+     * flight.
      */
     public boolean shutdown(Duration deadline) {
         this.sweepStop.store(1);
         this.registry.shutdown();
-        return this.server.shutdown(deadline);
+        // Each aborted connection's receive loop ends and runs its close
+        // hook, which takes it out of the registry. Wait for that before the
+        // http drain: the drain ends upgraded connections' fibers before
+        // their close hooks run, and their writer fibers then never stop.
+        int64 until = Clock.nanoTime() + deadline.toNanos();
+        while (this.registry.count() > 0 && Clock.nanoTime() < until) {
+            Fiber.sleep(Duration.ofMillis(5));
+        }
+        boolean ok = this.server.shutdown(deadline);
+        return ok;
     }
 
     /** The open WebSocket connections. */

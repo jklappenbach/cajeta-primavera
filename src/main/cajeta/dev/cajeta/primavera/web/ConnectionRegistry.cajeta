@@ -88,13 +88,23 @@ public final class ConnectionRegistry {
         return;
     }
 
-    // No connection opens after this; each open one is closed.
+    // No connection opens after this; each open one is aborted with 1001, so
+    // its close hook sees 1001 (spec §3.2).
     void shutdown() {
         this.opened.close();
+        this.closeAll(1001);
+        return;
+    }
+
+    /**
+     * Aborts every open connection with `code`: each one's close hook runs
+     * with it. The peer sees an abnormal closure, not a close frame.
+     */
+    public void closeAll(int32 code) {
         LockGuard g #= this.gate.acquire();
         int32 i = 0;
         while (i < this.liveCount) {
-            this.live[i].close(1001);
+            this.live[i].abortWith(code);
             i = i + 1;
         }
         return;

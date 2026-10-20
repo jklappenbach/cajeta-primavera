@@ -1,0 +1,326 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.concurrent.AtomicInt32;
+import cajeta.concurrent.Fiber;
+import cajeta.io.net.SocketAddress;
+import cajeta.io.net.TcpStream;
+import cajeta.lang.String;
+import cajeta.time.Duration;
+import dev.cajeta.http.ws.ConnectionClosedException;
+import dev.cajeta.http.ws.WebSocket;
+import dev.cajeta.http.ws.WsMessage;
+import dev.cajeta.primavera.web.CloseException;
+import dev.cajeta.primavera.web.Connection;
+import dev.cajeta.primavera.web.ConnectionRegistry;
+import dev.cajeta.primavera.web.Endpoints;
+import dev.cajeta.primavera.web.JsonBody;
+import dev.cajeta.primavera.web.WebServer;
+import dev.cajeta.primavera.web.WebServerBuilder;
+import dev.cajeta.primavera.web.WebSocketEndpoints;
+import dev.cajeta.unit.TestRunner;
+
+/**
+ * WebSocket open and close hooks (primavera-live-sessions spec §3, plan Unit
+ * 6): the open handler runs once a connection is in the registry and before
+ * its first message, inside its Connection scope; the close handler runs
+ * exactly once with the code for every cause, inside the Connection scope and
+ * before its components drop, after which a send to the connection reports
+ * not open.
+ */
+public final class HooksSelfTest {
+    static AtomicInt32 opens = heap AtomicInt32(0);
+    static AtomicInt32 closes = heap AtomicInt32(0);
+    static int32 lastCode;
+    static int32 openTag;
+    static boolean sameTag;
+    static int32 droppedAtClose;
+    static boolean sendAfterClose;
+    static boolean inRegistryAtOpen;
+    static boolean openBeforeMessage;
+    static ConnectionRegistry REG;
+
+    static void reset() {
+        HooksSelfTest.opens.store(0);
+        HooksSelfTest.closes.store(0);
+        HooksSelfTest.lastCode = 0;
+        HooksSelfTest.openTag = 0;
+        HooksSelfTest.sameTag = false;
+        HooksSelfTest.droppedAtClose = -1;
+        HooksSelfTest.sendAfterClose = true;
+        HooksSelfTest.inRegistryAtOpen = false;
+        HooksSelfTest.openBeforeMessage = false;
+        ConnectionProbe.reset();
+    }
+
+    static void opened(Connection c) {
+        ConnectionProbe p = ConnectionProbe.__cajeta_inject();
+        HooksSelfTest.openTag = p.tag;
+        HooksSelfTest.inRegistryAtOpen = HooksSelfTest.REG.count() >= 1;
+        HooksSelfTest.opens.fetchAdd(1);
+    }
+
+    static void message(Connection c, JsonBody b) {
+        String kind #= b.stringCopy("kind");
+        if (kind.equals("custom")) {
+            throw heap CloseException(4001);
+        }
+        if (kind.equals("fault")) {
+            throw heap Exception("a handler fault");
+        }
+        HooksSelfTest.openBeforeMessage = HooksSelfTest.opens.load() > 0;
+        c.send("{\"ok\":1}");
+    }
+
+    static void closed(Connection c, int32 code) {
+        ConnectionProbe p = ConnectionProbe.__cajeta_inject();
+        HooksSelfTest.sameTag = p.tag == HooksSelfTest.openTag;
+        HooksSelfTest.droppedAtClose = ConnectionProbe.dropped();
+        HooksSelfTest.sendAfterClose = HooksSelfTest.REG.send(c.id(), "{\"late\":1}");
+        HooksSelfTest.lastCode = code;
+        HooksSelfTest.closes.fetchAdd(1);
+    }
+
+    static void openFaults(Connection c) {
+        throw heap Exception("an open fault");
+    }
+
+    static void openCloses(Connection c) {
+        throw heap CloseException(4002);
+    }
+
+    static void closeFaults(Connection c, int32 code) {
+        HooksSelfTest.lastCode = code;
+        HooksSelfTest.closes.fetchAdd(1);
+        throw heap Exception("a close fault");
+    }
+
+    static #WebServer server() {
+        WebSocketEndpoints ws = heap WebSocketEndpoints();
+        ws.queueBound(4);
+        ws.overflowCode(1008);
+        ws.json("/hooked", (Connection c) -> HooksSelfTest.opened(c),
+                (Connection c, JsonBody b) -> HooksSelfTest.message(c, b),
+                (Connection c, int32 code) -> HooksSelfTest.closed(c, code));
+        ws.json("/openfault", (Connection c) -> HooksSelfTest.openFaults(c),
+                (Connection c, JsonBody b) -> HooksSelfTest.message(c, b),
+                (Connection c, int32 code) -> HooksSelfTest.closed(c, code));
+        ws.json("/openclose", (Connection c) -> HooksSelfTest.openCloses(c),
+                (Connection c, JsonBody b) -> HooksSelfTest.message(c, b),
+                (Connection c, int32 code) -> HooksSelfTest.closed(c, code));
+        ws.json("/closefault", (Connection c) -> HooksSelfTest.opened(c),
+                (Connection c, JsonBody b) -> HooksSelfTest.message(c, b),
+                (Connection c, int32 code) -> HooksSelfTest.closeFaults(c, code));
+        WebServerBuilder bld #= WebServer.builder();
+        bld.bind("127.0.0.1:0");
+        bld.endpoints(heap Endpoints());
+        bld.websockets(#ws);
+        return bld.build();
+    }
+
+    static async int32 serve(WebServer web) {
+        web.serve();
+        return 1;
+    }
+
+    // Waits, bounded, until `n` close handlers have run.
+    static void awaitCloses(int32 n) {
+        int32 w = 0;
+        while (HooksSelfTest.closes.load() < n && w < 300) {
+            Fiber.sleep(Duration.ofMillis(10));
+            w = w + 1;
+        }
+    }
+
+    static void awaitEmpty(WebServer web) {
+        int32 w = 0;
+        while (web.connections().count() != 0 && w < 300) {
+            Fiber.sleep(Duration.ofMillis(10));
+            w = w + 1;
+        }
+    }
+
+    // The close code the peer sees after sending `body`, or 0 if it got a reply.
+    static int32 closedBy(String url, String body) {
+        WebSocket ws #= WebSocket.connect(url);
+        try {
+            ws.send(body);
+            WsMessage m #= ws.receive();
+        } catch (ConnectionClosedException e) {
+            return e.closeCode;
+        }
+        return 0;
+    }
+
+    static int32 check(boolean ok, String what) {
+        if (ok) {
+            return 0;
+        }
+        System.stdout.println("  hooks: " + what + ": last code " + HooksSelfTest.lastCode
+            + ", opens " + HooksSelfTest.opens.load() + ", closes " + HooksSelfTest.closes.load());
+        return 1;
+    }
+
+    // A raw upgrade on `path` that the test then drops or never reads.
+    static #TcpStream rawUpgrade(int32 port, String path) {
+        TcpStream peer #= TcpStream.connectAsync(SocketAddress.parse("127.0.0.1:" + port));
+        String hs = "GET " + path + " HTTP/1.1\r\nHost: t\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+            + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+        int8[] hb #= hs.toBytes();
+        peer.writeAllAsync(hb, (int64) 0, (int64) hs.byteLength());
+        return #peer;
+    }
+
+    static async int32 drive(int32 port, WebServer web) {
+        String base = "ws://127.0.0.1:" + port;
+        int32 failures = 0;
+
+        // 6.1.1, 6.1.3, 6.1.4: a peer close, with the hooks' ordering and scope.
+        HooksSelfTest.reset();
+        WebSocket ws #= WebSocket.connect(base + "/hooked");
+        ws.send("{\"kind\":\"echo\"}");
+        WsMessage m #= ws.receive();
+        ws.close(1000, "done");
+        HooksSelfTest.awaitCloses(1);
+        failures = failures + HooksSelfTest.check(HooksSelfTest.opens.load() == 1, "one open per connection");
+        failures = failures + HooksSelfTest.check(HooksSelfTest.inRegistryAtOpen, "open runs once the connection is in the registry");
+        failures = failures + HooksSelfTest.check(HooksSelfTest.openBeforeMessage, "open runs before the first message");
+        failures = failures + HooksSelfTest.check(HooksSelfTest.closes.load() == 1 && HooksSelfTest.lastCode == 1000, "peer close reports 1000 once");
+        failures = failures + HooksSelfTest.check(HooksSelfTest.sameTag, "close runs in the open's Connection scope");
+        failures = failures + HooksSelfTest.check(HooksSelfTest.droppedAtClose == 0, "close runs before the Connection components drop");
+        failures = failures + HooksSelfTest.check(!HooksSelfTest.sendAfterClose, "a send once close has started reports not open");
+        HooksSelfTest.awaitEmpty(web);
+        failures = failures + HooksSelfTest.check(ConnectionProbe.dropped() == 1, "the component dropped after close");
+
+        // 6.1.2: a handler's CloseException and a handler fault.
+        HooksSelfTest.reset();
+        int32 c1 = HooksSelfTest.closedBy(base + "/hooked", "{\"kind\":\"custom\"}");
+        HooksSelfTest.awaitCloses(1);
+        failures = failures + HooksSelfTest.check(c1 == 4001 && HooksSelfTest.lastCode == 4001, "CloseException reports its code");
+        HooksSelfTest.awaitEmpty(web);
+        HooksSelfTest.reset();
+        int32 c2 = HooksSelfTest.closedBy(base + "/hooked", "{\"kind\":\"fault\"}");
+        HooksSelfTest.awaitCloses(1);
+        failures = failures + HooksSelfTest.check(c2 == 1011 && HooksSelfTest.lastCode == 1011, "a handler fault reports 1011");
+        HooksSelfTest.awaitEmpty(web);
+
+        // 6.1.5: an open handler that throws closes the connection, and close still runs.
+        HooksSelfTest.reset();
+        int32 c3 = HooksSelfTest.closedBy(base + "/openfault", "{\"kind\":\"echo\"}");
+        HooksSelfTest.awaitCloses(1);
+        failures = failures + HooksSelfTest.check(c3 == 1011 && HooksSelfTest.lastCode == 1011 && HooksSelfTest.closes.load() == 1,
+            "a throwing open handler closes 1011 and close still runs");
+        HooksSelfTest.awaitEmpty(web);
+        HooksSelfTest.reset();
+        int32 c4 = HooksSelfTest.closedBy(base + "/openclose", "{\"kind\":\"echo\"}");
+        HooksSelfTest.awaitCloses(1);
+        failures = failures + HooksSelfTest.check(c4 == 4002 && HooksSelfTest.lastCode == 4002, "an open handler's CloseException closes with its code");
+        HooksSelfTest.awaitEmpty(web);
+
+        // 6.1.5: a close handler that throws changes nothing else.
+        HooksSelfTest.reset();
+        WebSocket cf #= WebSocket.connect(base + "/closefault");
+        cf.close(1000, "done");
+        HooksSelfTest.awaitCloses(1);
+        HooksSelfTest.awaitEmpty(web);
+        WebSocket after #= WebSocket.connect(base + "/hooked");
+        after.send("{\"kind\":\"echo\"}");
+        WsMessage am #= after.receive();
+        String at #= am.text();
+        failures = failures + HooksSelfTest.check(at.equals("{\"ok\":1}"), "the server serves on after a close handler threw");
+        after.close(1000, "done");
+        HooksSelfTest.awaitCloses(2);
+        HooksSelfTest.awaitEmpty(web);
+
+        // 6.1.2: a transport drop runs close exactly once.
+        HooksSelfTest.reset();
+        TcpStream drop #= HooksSelfTest.rawUpgrade(port, "/hooked");
+        int32 w = 0;
+        while (web.connections().count() == 0 && w < 200) {
+            Fiber.sleep(Duration.ofMillis(10));
+            w = w + 1;
+        }
+        drop.close();
+        HooksSelfTest.awaitCloses(1);
+        Fiber.sleep(Duration.ofMillis(50));
+        System.stdout.println("  hooks: a transport drop closed with " + HooksSelfTest.lastCode);
+        failures = failures + HooksSelfTest.check(HooksSelfTest.closes.load() == 1 && HooksSelfTest.lastCode != 0, "a transport drop runs close once");
+        HooksSelfTest.awaitEmpty(web);
+
+        // 6.1.2: overflow on a peer that never reads closes 1008.
+        HooksSelfTest.reset();
+        TcpStream slow #= HooksSelfTest.rawUpgrade(port, "/hooked");
+        w = 0;
+        while (web.connections().count() == 0 && w < 200) {
+            Fiber.sleep(Duration.ofMillis(10));
+            w = w + 1;
+        }
+        String big = "{\"pad\":\"";
+        int32 k = 0;
+        while (k < 6000) {
+            big = big + "xxxxxxxxxx";
+            k = k + 1;
+        }
+        big = big + "\"}";
+        int32 sent = 0;
+        while (web.connections().count() > 0 && sent < 2000) {
+            web.connections().broadcast(big);
+            sent = sent + 1;
+        }
+        HooksSelfTest.awaitCloses(1);
+        failures = failures + HooksSelfTest.check(HooksSelfTest.closes.load() == 1 && HooksSelfTest.lastCode == 1008, "overflow reports 1008 once");
+        HooksSelfTest.awaitEmpty(web);
+        slow.close();
+        return failures;
+    }
+
+    // Holds a connection open until the server closes it.
+    static async int32 holder(int32 port) {
+        WebSocket ws #= WebSocket.connect("ws://127.0.0.1:" + port + "/hooked");
+        try {
+            WsMessage m #= ws.receive();
+        } catch (ConnectionClosedException e) {
+            return e.closeCode;
+        }
+        return 0;
+    }
+
+    public static void add(TestRunner t) {
+        t.test("WebSocket open and close hooks: order, scope, and the close code for each cause", () -> {
+            scope {
+                WebServer web #= HooksSelfTest.server();
+                HooksSelfTest.REG #= web.connections();
+                int32 port = web.port();
+                Task<int32> sv = spawn serve(web);
+                Task<int32> td = spawn drive(port, web);
+                int32 failures = await td;
+                web.shutdown(Duration.ofSeconds(2));
+                await sv;
+                SelfTest.req(failures == 0, "every hook check held (see the lines above)");
+            }
+        });
+
+        t.test("WebSocket: server shutdown closes each connection with 1001 and its close handler sees it", () -> {
+            int32 seen = 0;
+            scope {
+                WebServer web #= HooksSelfTest.server();
+                HooksSelfTest.REG #= web.connections();
+                HooksSelfTest.reset();
+                int32 port = web.port();
+                Task<int32> sv = spawn serve(web);
+                Task<int32> th = spawn holder(port);
+                int32 w = 0;
+                while (HooksSelfTest.opens.load() == 0 && w < 300) {
+                    Fiber.sleep(Duration.ofMillis(10));
+                    w = w + 1;
+                }
+                web.shutdown(Duration.ofSeconds(2));
+                seen = await th;
+                await sv;
+            }
+            System.stdout.println("  hooks: on shutdown the peer saw " + seen);
+            SelfTest.req(HooksSelfTest.closes.load() == 1 && HooksSelfTest.lastCode == 1001,
+                         "the close handler ran once with 1001");
+            SelfTest.req(seen != 0, "the peer saw its connection close");
+        });
+    }
+}

@@ -45,6 +45,25 @@ public final class WebSocketEndpoints {
         return this;
     }
 
+    /**
+     * Accepts WebSocket connections on `path` with open and close hooks
+     * (spec §3). `onOpen` runs once the connection is in the registry and
+     * before its first message; `onClose` runs exactly once with the close
+     * code, whatever the cause, before the connection's components drop.
+     * Both run inside the connection's `Connection` scope.
+     */
+    public WebSocketEndpoints json(String path, (Connection) -> void onOpen,
+                                   (Connection, JsonBody) -> void onMessage,
+                                   (Connection, int32) -> void onClose) {
+        WebSocketEndpoint e = heap WebSocketEndpoint(path, onMessage);
+        e.openH #= onOpen;
+        e.hasOpen = true;
+        e.closeH #= onClose;
+        e.hasClose = true;
+        this.list.add(#e);
+        return this;
+    }
+
     public int32 count() { return this.list.count(); }
 
     /** The identity of the path declared last, for a security rule on its upgrade route. */

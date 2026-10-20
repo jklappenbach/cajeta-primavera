@@ -7,11 +7,18 @@ public final class WebSocketEndpoint {
     String path;
     (Connection, JsonBody) -> void json;
     RouteId id;
+    // The optional open and close hooks (spec §3).
+    (Connection) -> void openH;
+    boolean hasOpen;
+    (Connection, int32) -> void closeH;
+    boolean hasClose;
 
     WebSocketEndpoint(String path, (Connection, JsonBody) -> void json) {
         this.path #= path.substring(0, path.byteLength());
         this.json #= json;
         this.id #= heap RouteId("GET", path);
+        this.hasOpen = false;
+        this.hasClose = false;
         return;
     }
 

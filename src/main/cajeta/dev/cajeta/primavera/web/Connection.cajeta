@@ -2,9 +2,14 @@ package dev.cajeta.primavera.web;
 
 import cajeta.aot.Scope;
 import cajeta.concurrent.Channel;
+import cajeta.concurrent.Fiber;
 import cajeta.concurrent.Lock;
 import cajeta.concurrent.LockGuard;
 import cajeta.lang.String;
+import cajeta.time.Duration;
+import dev.cajeta.logging.Level;
+import dev.cajeta.logging.Logged;
+import dev.cajeta.logging.LogRecord;
 import dev.cajeta.http.status.BadRequestException;
 import dev.cajeta.http.ws.MessageTooLargeException;
 import dev.cajeta.http.ws.WebSocketConnection;
@@ -28,6 +33,7 @@ import dev.cajeta.http.ws.WsMessage;
  * the overflow code (spec §6.5).
  */
 @Scope("Connection")
+@Logged
 public class Connection implements WebSocketHandler {
     int64 connId;
     ConnectionRegistry registry;
@@ -44,6 +50,9 @@ public class Connection implements WebSocketHandler {
     boolean signalled;
     boolean closing;
     boolean writing;
+    // The open hook threw: the connection is closing and no message
+    // handler runs on it.
+    boolean refused;
     Channel<int32> wake;
     Channel<int32> done;
 
@@ -70,6 +79,7 @@ public class Connection implements WebSocketHandler {
         this.signalled = false;
         this.closing = false;
         this.writing = false;
+        this.refused = false;
         this.wake = heap Channel<int32>(1);
         this.done = heap Channel<int32>(1);
         return;
@@ -99,11 +109,47 @@ public class Connection implements WebSocketHandler {
     public void onConnect(WebSocketConnection conn) {
         this.ws #= conn;
         this.registry.add(this);
+        if (this.endpoint.hasOpen) {
+            try {
+                Connection.callOpen(this.endpoint.openH, this);
+            } catch (CloseException e) {
+                this.refused = true;
+                this.close(e.code);
+            } catch (Exception e) {
+                this.refused = true;
+                this.close(1011);
+            }
+        }
+        return;
+    }
+
+    static void callOpen((Connection) -> void h, Connection c) {
+        h(c);
+    }
+
+    static void callClose((Connection, int32) -> void h, Connection c, int32 code) {
+        h(c, code);
+    }
+
+    // Aborts with `code` (server shutdown, §3.2): the receive loop ends and
+    // the close hook sees `code`. No close frame goes first: on cajeta-http
+    // 0.9.0 a server-side close followed by abort leaves `next()` parked and
+    // the close hook never runs, so the peer sees an abnormal closure (1006).
+    void abortWith(int32 code) {
+        if (this.ws != null) {
+            try {
+                this.ws.abort(code);
+            } catch (Exception e) {
+            }
+        }
         return;
     }
 
     @Scope(value = "Message", within = "Connection")
     public void onMessage(WebSocketConnection conn, WsMessage message) {
+        if (this.refused) {
+            return;
+        }
         try {
             this.body.bind(message.bytes(), 0, message.length());
             (Connection, JsonBody) -> void h = this.endpoint.json;
@@ -120,6 +166,10 @@ public class Connection implements WebSocketHandler {
         return;
     }
 
+    // Out of the registry first, so a send from the close hook reports not
+    // open (§3.3); then the writer is stopped, aborting the socket only if a
+    // writer is stuck on a full kernel buffer; then the close hook runs with
+    // the code, before the Connection components drop (§3.2).
     public void onClose(WebSocketConnection conn, int32 code) {
         this.registry.closed(this, code);
         boolean wait = false;
@@ -130,7 +180,37 @@ public class Connection implements WebSocketHandler {
         }
         this.wake.close();
         if (wait) {
-            this.done.receive();
+            // The writer ends on its own once the wake channel closes. Abort
+            // only a writer still inside a send after 200 ms (stuck on a full
+            // kernel buffer): aborting under a send in progress faulted.
+            int32 polls = 0;
+            boolean ended = false;
+            while (!ended && polls < 40) {
+                ended = this.done.tryReceive().isPresent();
+                if (!ended) {
+                    Fiber.sleep(Duration.ofMillis(5));
+                    polls = polls + 1;
+                }
+            }
+            if (!ended) {
+                if (this.ws != null) {
+                    try {
+                        this.ws.abort(code);
+                    } catch (Exception e) {
+                    }
+                }
+                this.done.receive();
+            }
+        }
+        if (this.endpoint.hasClose) {
+            try {
+                Connection.callClose(this.endpoint.closeH, this, code);
+            } catch (Exception e) {
+                LogRecord r #= log.event(Level.WARN, "WebSocket close handler threw");
+                r.i64("connection", this.connId);
+                r.i64("code", code);
+                log.emit(#r);
+            }
         }
         this.ws = null;
         return;
