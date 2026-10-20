@@ -328,7 +328,7 @@ public class SelfTest {
         // primavera-web 7.1.1: the version a consumer reads at run time is the
         // release's. scripts/version-gate.sh holds the manifest to the same string.
         t.test("Primavera.version() is the release's version", () -> {
-            Assert.equals("0.4.0", Primavera.version());
+            Assert.equals("0.5.0", Primavera.version());
         });
         PipelineSelfTest.add(t);
         WebSelfTest.add(t);

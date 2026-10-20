@@ -16,14 +16,14 @@ patterns.
 > opinion isn't yours, you keep the substrate and build your own — nothing in the
 > core forces primavera on you.
 
-## Status — v0.3.0
+## Status — v0.5.0
 
 | Capability | State |
 |---|---|
 | **`Request` and `Session` scopes**, published for `@Component(scope = ...)` (`Requests`, `SessionEntry`) | ✅ built, self-tested |
 | DI substrate (`@Component` / `@Inject` / `@Factory` / aspects) | ↳ **core stdlib** — primavera consumes it (`docs/specification/lang/AspectModel.md`) |
-| Session store with idle and absolute TTLs (`SessionScope`, `SessionStore`) | ✅ built, self-tested |
-| **Web**: the HTTP pipeline over [cajeta-http](https://github.com/jklappenbach/cajeta-http), routing, binding, WebSocket endpoints, codecs and codings ([`docs/Web.md`](docs/Web.md)) | ✅ shipped, self-tested, exercised by the register-user sample |
+| Session store with idle and absolute TTLs (`SessionScope`, `SessionStore`); store-issued ids with an OPEN / GONE / UNKNOWN lookup, a capacity, an eviction observer, and a sweep while serving | ✅ built, self-tested |
+| **Web**: the HTTP pipeline over [cajeta-http](https://github.com/jklappenbach/cajeta-http), routing, binding, WebSocket endpoints with open and close hooks and a send queue bounded in bytes, codecs and codings, static directory mounts ([`docs/Web.md`](docs/Web.md)) | ✅ shipped, self-tested, exercised by the register-user sample |
 | **Security**: bearer tokens from the [cajeta-cloud](https://github.com/jklappenbach/cajeta-cloud) identity port, the policy algebra, startup coverage of every route, challenge handles ([`docs/Security.md`](docs/Security.md)) | ✅ shipped, self-tested; RS256 and ES256 verified, ES256 from the memory driver, request scope only (limits in the page) |
 | Stereotypes (`@Repository` / `@Service`) + deployment `@Profile` | ▢ planned (policy over the core substrate) |
 | primavera-side unit-test helpers (`PrimaveraTest`) | ✅ built, self-tested (on [cajeta-unit](https://github.com/jklappenbach/cajeta-unit)) |

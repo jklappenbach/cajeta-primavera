@@ -15,7 +15,7 @@
 
     "details": {
         "name":               "dev.cajeta.primavera",
-        "version":            "0.4.0",
+        "version":            "0.5.0",
         "description":        "primavera — enterprise framework for Cajeta (components, web, request/session scope)",
         "license":            "Apache-2.0",
         "authors":            ["Julian Klappenbach"],
