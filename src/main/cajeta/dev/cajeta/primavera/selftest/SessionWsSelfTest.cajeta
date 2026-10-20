@@ -1,0 +1,131 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.concurrent.Fiber;
+import cajeta.lang.String;
+import cajeta.time.Duration;
+import dev.cajeta.http.ws.WebSocket;
+import dev.cajeta.http.ws.WsMessage;
+import dev.cajeta.primavera.context.SessionScope;
+import dev.cajeta.primavera.context.SessionState;
+import dev.cajeta.primavera.web.Connection;
+import dev.cajeta.primavera.web.Endpoints;
+import dev.cajeta.primavera.web.JsonBody;
+import dev.cajeta.primavera.web.WebServer;
+import dev.cajeta.primavera.web.WebServerBuilder;
+import dev.cajeta.primavera.web.WebSocketEndpoints;
+import dev.cajeta.unit.TestRunner;
+
+/**
+ * Sessions inside WebSocket messages (primavera-live-sessions spec §2.9, plan
+ * Unit 5): a message handler attaches a session by id and that session's
+ * components resolve for the message; one connection may attach different
+ * sessions on different messages; a connection closing ends no session.
+ */
+public final class SessionWsSelfTest {
+    static String idA;
+    static String idB;
+
+    // Attaches the session the message names and answers with its
+    // SessionProbe's tag.
+    static void attachAndTag(Connection c, JsonBody b) {
+        String sid #= b.stringCopy("s");
+        SessionScope.attach(sid, () -> SessionWsSelfTest.reply(c));
+        return;
+    }
+
+    static void reply(Connection c) {
+        SessionProbe p = SessionProbe.__cajeta_inject();
+        c.send("{\"tag\":" + p.tag + "}");
+        return;
+    }
+
+    static #WebServer server() {
+        WebSocketEndpoints ws = heap WebSocketEndpoints();
+        ws.json("/sess", (Connection c, JsonBody b) -> SessionWsSelfTest.attachAndTag(c, b));
+        WebServerBuilder bld #= WebServer.builder();
+        bld.bind("127.0.0.1:0");
+        bld.endpoints(heap Endpoints());
+        bld.websockets(#ws);
+        return bld.build();
+    }
+
+    static async int32 serve(WebServer web) {
+        web.serve();
+        return 1;
+    }
+
+    static #String tagFor(WebSocket ws, String sid) {
+        ws.send("{\"s\":\"" + sid + "\"}");
+        WsMessage m #= ws.receive();
+        return m.text();
+    }
+
+    static async int32 drive(int32 port, WebServer web) {
+        String url = "ws://127.0.0.1:" + port + "/sess";
+        int32 failures = 0;
+        int32 before = SessionScope.sessionCount();
+
+        WebSocket ws #= WebSocket.connect(url);
+        String ta #= SessionWsSelfTest.tagFor(ws, SessionWsSelfTest.idA);
+        String tb #= SessionWsSelfTest.tagFor(ws, SessionWsSelfTest.idB);
+        String ta2 #= SessionWsSelfTest.tagFor(ws, SessionWsSelfTest.idA);
+        if (ta.equals(tb) || !ta.equals(ta2) || SessionProbe.built() != 2) {
+            System.stdout.println("  one connection, two sessions: A " + ta + ", B " + tb + ", A again " + ta2
+                + ", built " + SessionProbe.built());
+            failures = failures + 1;
+        }
+        if (SessionScope.sessionCount() != before) {
+            System.stdout.println("  connection open changed the session count: " + before + " to " + SessionScope.sessionCount());
+            failures = failures + 1;
+        }
+        ws.close(1000, "done");
+        int32 w = 0;
+        while (web.connections().count() != 0 && w < 200) {
+            Fiber.sleep(Duration.ofMillis(10));
+            w = w + 1;
+        }
+        if (SessionScope.lookup(SessionWsSelfTest.idA) != SessionState.OPEN
+                || SessionScope.lookup(SessionWsSelfTest.idB) != SessionState.OPEN
+                || SessionScope.sessionCount() != before || SessionProbe.dropped() != 0) {
+            System.stdout.println("  closing the connection ended a session: count " + SessionScope.sessionCount()
+                + " (was " + before + "), dropped " + SessionProbe.dropped());
+            failures = failures + 1;
+        }
+
+        WebSocket again #= WebSocket.connect(url);
+        String ta3 #= SessionWsSelfTest.tagFor(again, SessionWsSelfTest.idA);
+        if (!ta3.equals(ta) || SessionProbe.built() != 2) {
+            System.stdout.println("  a new connection attaching A saw " + ta3 + ", first saw " + ta);
+            failures = failures + 1;
+        }
+        again.close(1000, "done");
+        // Wait for the close to land before the test shuts the server down:
+        // a shutdown racing a closing connection can hang serve (plan Unit 6).
+        w = 0;
+        while (web.connections().count() != 0 && w < 200) {
+            Fiber.sleep(Duration.ofMillis(10));
+            w = w + 1;
+        }
+        return failures;
+    }
+
+    public static void add(TestRunner t) {
+        t.test("WebSocket messages attach sessions by id, and a closing connection ends none", () -> {
+            SessionScope.invalidateAll();
+            SessionProbe.reset();
+            SessionWsSelfTest.idA #= SessionScope.open();
+            SessionWsSelfTest.idB #= SessionScope.open();
+            scope {
+                WebServer web #= SessionWsSelfTest.server();
+                int32 port = web.port();
+                Task<int32> sv = spawn serve(web);
+                Task<int32> td = spawn drive(port, web);
+                int32 failures = await td;
+                web.shutdown(Duration.ofSeconds(2));
+                await sv;
+                SelfTest.req(failures == 0, "every session-in-message check held (see the lines above)");
+            }
+            SessionScope.invalidateAll();
+        });
+    }
+}

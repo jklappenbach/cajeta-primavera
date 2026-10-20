@@ -333,6 +333,7 @@ public class SelfTest {
         PipelineSelfTest.add(t);
         WebSelfTest.add(t);
         WsSelfTest.add(t);
+        SessionWsSelfTest.add(t);
         CodecSelfTest.add(t);
         IdentitySelfTest.add(t);
         SecuritySelfTest.add(t);
