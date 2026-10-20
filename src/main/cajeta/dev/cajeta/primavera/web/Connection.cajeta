@@ -52,6 +52,9 @@ public class Connection implements WebSocketHandler {
     // The open hook threw: the connection is closing and no message
     // handler runs on it.
     boolean refused;
+    // A writer fiber was handed this connection and will run writeLoop on
+    // it, so onClose must wait for that to end before the connection drops.
+    boolean dispatched;
     Channel<int32> wake;
     Channel<int32> done;
 
@@ -72,6 +75,7 @@ public class Connection implements WebSocketHandler {
         this.closing = false;
         this.writing = false;
         this.refused = false;
+        this.dispatched = false;
         this.wake = heap Channel<int32>(1);
         this.done = heap Channel<int32>(1);
         return;
@@ -100,7 +104,7 @@ public class Connection implements WebSocketHandler {
 
     public void onConnect(WebSocketConnection conn) {
         this.ws #= conn;
-        this.registry.add(this);
+        this.dispatched = this.registry.add(this);
         if (this.endpoint.hasOpen) {
             try {
                 Connection.callOpen(this.endpoint.openH, this);
@@ -168,7 +172,10 @@ public class Connection implements WebSocketHandler {
         {
             LockGuard g #= this.gate.acquire();
             this.closing = true;
-            wait = this.writing;
+            // Wait on any writer that was dispatched, started or not: one
+            // still queued would otherwise run writeLoop on a freed
+            // connection (a null vtable call in WebServer.writer, D-15).
+            wait = this.writing || this.dispatched;
         }
         this.wake.close();
         if (wait) {

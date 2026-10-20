@@ -284,7 +284,38 @@ public final class HooksSelfTest {
         return 0;
     }
 
+    // 50 connections, each closed as soon as it opens: each one's writer
+    // fiber is queued when it enters the registry and may not have started
+    // when it closes (D-15).
+    static async int32 churn(int32 port, WebServer web) {
+        int32 i = 0;
+        while (i < 50) {
+            WebSocket ws #= WebSocket.connect("ws://127.0.0.1:" + port + "/hooked");
+            ws.close(1000, "done");
+            i = i + 1;
+        }
+        HooksSelfTest.awaitCloses(50);
+        HooksSelfTest.awaitEmpty(web);
+        return HooksSelfTest.closes.load();
+    }
+
     public static void add(TestRunner t) {
+        t.test("WebSocket: 50 connections closed as they open leave no writer on a freed connection", () -> {
+            int32 closed = 0;
+            scope {
+                WebServer web #= HooksSelfTest.server();
+                HooksSelfTest.REG #= web.connections();
+                HooksSelfTest.reset();
+                int32 port = web.port();
+                Task<int32> sv = spawn serve(web);
+                Task<int32> tc = spawn churn(port, web);
+                closed = await tc;
+                web.shutdown(Duration.ofSeconds(2));
+                await sv;
+            }
+            SelfTest.req(closed == 50, "every connection ran its close hook");
+        });
+
         t.test("WebSocket open and close hooks: order, scope, and the close code for each cause", () -> {
             scope {
                 WebServer web #= HooksSelfTest.server();

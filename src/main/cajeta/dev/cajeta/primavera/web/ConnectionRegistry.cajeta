@@ -43,8 +43,10 @@ public final class ConnectionRegistry {
         return this.next;
     }
 
-    // `c` is open: address it, and hand it to the writer dispatcher.
-    void add(^Connection c) {
+    // `c` is open: address it, and hand it to the writer dispatcher. True
+    // when a writer fiber will run for it; false once shutdown has closed
+    // the dispatcher.
+    boolean add(^Connection c) {
         {
             LockGuard g #= this.gate.acquire();
             if (this.liveCount == this.live.count()) {
@@ -59,8 +61,15 @@ public final class ConnectionRegistry {
             this.live[this.liveCount] = c;
             this.liveCount = this.liveCount + 1;
         }
-        this.opened.send(c);
-        return;
+        if (this.opened.isClosed()) {
+            return false;
+        }
+        try {
+            this.opened.send(c);
+        } catch (Exception e) {
+            return false;
+        }
+        return true;
     }
 
     // Takes `c` out when it closes, so no send reaches it again.
