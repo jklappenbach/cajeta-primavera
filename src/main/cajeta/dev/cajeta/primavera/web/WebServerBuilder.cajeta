@@ -25,6 +25,7 @@ public final class WebServerBuilder {
     WebSocketEndpoints sockets;
     ArrayList<Stage> leading;
     Guard gate;
+    int64 sweep;
 
     public WebServerBuilder() {
         this.addr = "127.0.0.1:0";
@@ -34,7 +35,18 @@ public final class WebServerBuilder {
         this.sockets = null;
         this.leading = heap ArrayList<Stage>();
         this.gate = null;
+        this.sweep = 0;
         return;
+    }
+
+    /**
+     * Sweep expired sessions every `millis` ms while serving, in place of a
+     * quarter of the ambient store's idle TTL (spec §7.3). With no TTL and no
+     * override the server does not sweep.
+     */
+    public WebServerBuilder sessionSweep(int64 millis) {
+        this.sweep = millis;
+        return this;
     }
 
     public WebServerBuilder bind(String addr) {
@@ -87,6 +99,7 @@ public final class WebServerBuilder {
     /** Builds the pipeline, checks it, and binds the server. */
     public #WebServer build() {
         WebServer ws = heap WebServer();
+        ws.sweepOverride = this.sweep;
         if (this.api == null) {
             this.api = heap Endpoints();
         }

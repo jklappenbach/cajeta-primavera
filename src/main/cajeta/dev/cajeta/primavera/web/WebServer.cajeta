@@ -1,6 +1,8 @@
 package dev.cajeta.primavera.web;
 
+import cajeta.concurrent.AtomicInt32;
 import cajeta.concurrent.Channel;
+import cajeta.concurrent.Fiber;
 import cajeta.io.net.SocketAddress;
 import cajeta.lang.String;
 import cajeta.time.Duration;
@@ -8,6 +10,7 @@ import dev.cajeta.http.HttpRequest;
 import dev.cajeta.http.HttpResponse;
 import dev.cajeta.http.server.HttpServer;
 import dev.cajeta.primavera.context.Requests;
+import dev.cajeta.primavera.context.SessionScope;
 import dev.cajeta.primavera.pipeline.Buffer;
 import dev.cajeta.primavera.pipeline.BufferSource;
 import dev.cajeta.primavera.pipeline.Pipeline;
@@ -29,6 +32,13 @@ public final class WebServer {
     ConnectionRegistry registry;
     // The guard the pipeline's security stages borrow, or null.
     Guard guard;
+    // The session sweep (spec §2.8, §7.3): the builder's interval override
+    // (0 = a quarter of the idle TTL), the interval serve chose (0 = none),
+    // the sweeps run, and the stop flag shutdown raises.
+    int64 sweepOverride;
+    int64 sweepMs;
+    AtomicInt32 sweepCount;
+    AtomicInt32 sweepStop;
 
     WebServer() {
         this.server = null;
@@ -38,6 +48,10 @@ public final class WebServer {
         this.sockets = null;
         this.registry = heap ConnectionRegistry();
         this.guard = null;
+        this.sweepOverride = 0;
+        this.sweepMs = 0;
+        this.sweepCount = heap AtomicInt32(0);
+        this.sweepStop = heap AtomicInt32(0);
         return;
     }
 
@@ -74,15 +88,67 @@ public final class WebServer {
     /**
      * Serves until {@link #shutdown}. Each WebSocket connection's writer
      * fiber runs inside this call, so it returns once they have all ended.
+     * When the ambient session store has an idle TTL, a sweep fiber runs
+     * beside them and removes expired sessions on an interval (spec §2.8).
      */
     public void serve() {
         ConnectionRegistry r = this.registry;
+        this.sweepMs = WebServer.sweepMillisFor(SessionScope.idleTtl(), this.sweepOverride);
+        int64 every = this.sweepMs;
         scope {
             spawn writers(r);
+            if (every > (int64) 0) {
+                spawn sweeper(this, every);
+            }
             this.server.serve();
         }
         return;
     }
+
+    /**
+     * The sweep interval for an idle TTL (spec §7.3): `override` when set,
+     * otherwise a quarter of the TTL, at most 60 s; 0, no sweep, when there
+     * is no TTL and no override.
+     */
+    public static int64 sweepMillisFor(int64 idleTtlMillis, int64 override) {
+        if (override > (int64) 0) {
+            return override;
+        }
+        if (idleTtlMillis <= (int64) 0) {
+            return 0;
+        }
+        int64 q = idleTtlMillis / (int64) 4;
+        if (q > (int64) 60000) {
+            q = 60000;
+        }
+        if (q < (int64) 1) {
+            q = 1;
+        }
+        return q;
+    }
+
+    // Sweeps the ambient store every `every` ms until shutdown. It sleeps in
+    // steps of at most 20 ms, so shutdown never waits out a long interval.
+    static async int32 sweeper(WebServer w, int64 every) {
+        int64 step = every < (int64) 20 ? every : (int64) 20;
+        int64 waited = 0;
+        while (w.sweepStop.load() == 0) {
+            Fiber.sleep(Duration.ofMillis(step));
+            waited = waited + step;
+            if (waited >= every && w.sweepStop.load() == 0) {
+                SessionScope.evictExpired();
+                w.sweepCount.fetchAdd(1);
+                waited = 0;
+            }
+        }
+        return 1;
+    }
+
+    /** The interval `serve` sweeps sessions at, in ms; 0 when it does not sweep. */
+    public int64 sessionSweepMillis() { return this.sweepMs; }
+
+    /** Sweeps run so far. */
+    public int32 sweeps() { return this.sweepCount.load(); }
 
     // Spawns a writer fiber for each connection the registry opens, until
     // the registry shuts down; returns when they have all ended.
@@ -111,6 +177,7 @@ public final class WebServer {
      * up to `deadline` for requests in flight.
      */
     public boolean shutdown(Duration deadline) {
+        this.sweepStop.store(1);
         this.registry.shutdown();
         return this.server.shutdown(deadline);
     }

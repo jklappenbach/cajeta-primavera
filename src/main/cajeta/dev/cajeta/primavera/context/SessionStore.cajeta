@@ -197,6 +197,11 @@ public class SessionStore {
         this.idleTtlMillis = millis;
     }
 
+    /** The idle TTL in millis, 0 when none is set. */
+    public int64 idleTtl() {
+        return this.idleTtlMillis;
+    }
+
     /** Expire sessions older than `millis` regardless of activity (0 disables). */
     public void setAbsoluteTtl(int64 millis) {
         this.absoluteTtlMillis = millis;

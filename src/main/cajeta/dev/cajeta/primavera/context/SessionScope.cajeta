@@ -55,6 +55,19 @@ public class SessionScope {
         return SessionScope.STORE.lookup(sessionId);
     }
 
+    /**
+     * The ambient store's eviction observer (spec §2.7); see
+     * {@link SessionStore#setEvictionObserver}.
+     */
+    public static void setEvictionObserver((String, int32) -> void observer) {
+        SessionScope.STORE.setEvictionObserver(observer);
+    }
+
+    /** The ambient store's idle TTL in millis, 0 when none is set. */
+    public static int64 idleTtl() {
+        return SessionScope.STORE.idleTtl();
+    }
+
     /** Drop the session under `sessionId` and its components, e.g. at logout. */
     public static void invalidate(String sessionId) {
         SessionScope.STORE.invalidate(sessionId);

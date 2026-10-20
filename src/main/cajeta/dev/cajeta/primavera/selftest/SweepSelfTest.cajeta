@@ -1,0 +1,115 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.concurrent.AtomicInt32;
+import cajeta.concurrent.Fiber;
+import cajeta.time.Clock;
+import cajeta.time.Duration;
+import dev.cajeta.primavera.context.SessionScope;
+import dev.cajeta.primavera.context.SessionState;
+import dev.cajeta.primavera.context.SessionStore;
+import dev.cajeta.primavera.web.Endpoints;
+import dev.cajeta.primavera.web.WebServer;
+import dev.cajeta.primavera.web.WebServerBuilder;
+import dev.cajeta.unit.TestRunner;
+
+/**
+ * The session sweep fiber (primavera-live-sessions spec §2.8, decision §7.3,
+ * plan Unit 4): a server whose ambient store has an idle TTL sweeps expired
+ * sessions on an interval, a quarter of the TTL capped at 60 s unless set,
+ * with no lookup needed; no TTL, no sweep; shutdown stops it.
+ */
+public class SweepSelfTest {
+    static AtomicInt32 expired = heap AtomicInt32(0);
+
+    static void onEvicted(String id, int32 reason) {
+        if (reason == SessionStore.EXPIRED) {
+            SweepSelfTest.expired.fetchAdd(1);
+        }
+    }
+
+    static void ignore(String id, int32 reason) {
+        return;
+    }
+
+    static async int32 serve(WebServer web) {
+        web.serve();
+        return 1;
+    }
+
+    static #WebServer server(int64 sweepMillis) {
+        WebServerBuilder b #= WebServer.builder();
+        b.bind("127.0.0.1:0");
+        b.endpoints(heap Endpoints());
+        if (sweepMillis > (int64) 0) {
+            b.sessionSweep(sweepMillis);
+        }
+        return b.build();
+    }
+
+    public static void add(TestRunner t) {
+        t.test("a served store with an idle TTL sweeps an abandoned session with no lookup", () -> {
+            SessionScope.invalidateAll();
+            SweepSelfTest.expired.store(0);
+            SessionScope.configure(400, 0);
+            SessionScope.setEvictionObserver((String id, int32 reason) -> SweepSelfTest.onEvicted(id, reason));
+            int64 elapsed = 0;
+            scope {
+                WebServer web #= SweepSelfTest.server((int64) 0);
+                Task<int32> sv = spawn serve(web);
+                String id #= SessionScope.open();
+                int64 start = Clock.millisTime();
+                while (SweepSelfTest.expired.load() == 0 && Clock.millisTime() - start < (int64) 3000) {
+                    Fiber.sleep(Duration.ofMillis(10));
+                }
+                elapsed = Clock.millisTime() - start;
+                SelfTest.req(web.sessionSweepMillis() == (int64) 100, "a 400 ms TTL sweeps every 100 ms");
+                web.shutdown(Duration.ofSeconds(2));
+                await sv;
+                SelfTest.req(SessionScope.lookup(id) == SessionState.GONE, "the abandoned session is GONE");
+            }
+            SessionScope.setEvictionObserver((String id, int32 reason) -> SweepSelfTest.ignore(id, reason));
+            SessionScope.configure(0, 0);
+            System.stdout.println("  swept " + elapsed + " ms after the open (TTL 400, interval 100)");
+            SelfTest.req(SweepSelfTest.expired.load() == 1, "the observer reported EXPIRED once");
+            // Expires after 400 ms idle; the next 100 ms tick takes it; 150 ms of slack for the carriers.
+            SelfTest.req(elapsed <= (int64) 650, "swept within the TTL plus one interval");
+        });
+
+        t.test("the sweep interval is a quarter of the TTL, at most 60 s, unless set", () -> {
+            SelfTest.req(WebServer.sweepMillisFor((int64) 400, (int64) 0) == (int64) 100, "a quarter of 400 ms");
+            SelfTest.req(WebServer.sweepMillisFor((int64) 3600000, (int64) 0) == (int64) 60000, "capped at 60 s");
+            SelfTest.req(WebServer.sweepMillisFor((int64) 400, (int64) 50) == (int64) 50, "an override wins");
+            SelfTest.req(WebServer.sweepMillisFor((int64) 0, (int64) 0) == (int64) 0, "no TTL, no sweep");
+        });
+
+        t.test("with no idle TTL the server starts no sweep, and shutdown returns", () -> {
+            SessionScope.configure(0, 0);
+            scope {
+                WebServer web #= SweepSelfTest.server((int64) 0);
+                Task<int32> sv = spawn serve(web);
+                Fiber.sleep(Duration.ofMillis(50));
+                SelfTest.req(web.sessionSweepMillis() == (int64) 0, "no sweep interval");
+                SelfTest.req(web.sweeps() == 0, "no sweep ran");
+                web.shutdown(Duration.ofSeconds(2));
+                await sv;
+            }
+        });
+
+        t.test("shutdown stops the sweep fiber and serve returns promptly", () -> {
+            SessionScope.configure(60000, 0);
+            int64 took = 0;
+            scope {
+                WebServer web #= SweepSelfTest.server((int64) 0);
+                Task<int32> sv = spawn serve(web);
+                Fiber.sleep(Duration.ofMillis(50));
+                SelfTest.req(web.sessionSweepMillis() == (int64) 15000, "a 60 s TTL sweeps every 15 s");
+                int64 start = Clock.millisTime();
+                web.shutdown(Duration.ofSeconds(2));
+                await sv;
+                took = Clock.millisTime() - start;
+            }
+            SessionScope.configure(0, 0);
+            SelfTest.req(took < (int64) 2000, "serve returned without waiting out the 15 s interval");
+        });
+    }
+}
