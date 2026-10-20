@@ -1,0 +1,128 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.codec.Base64;
+import dev.cajeta.primavera.context.ManualTimeSource;
+import dev.cajeta.primavera.context.SessionScope;
+import dev.cajeta.primavera.context.SessionState;
+import dev.cajeta.primavera.context.SessionStore;
+import dev.cajeta.unit.TestRunner;
+
+/**
+ * Store-issued session ids and the three-valued lookup (primavera-live-sessions
+ * spec §2.1 to §2.4, plan Unit 1): `open()` issues an id the store can account
+ * for after the session ends, and `lookup(id)` answers OPEN, GONE (issued here,
+ * since ended) or UNKNOWN (never issued here, forged ids included).
+ */
+public class IssuedSessionSelfTest {
+
+    /** `id` with its MAC replaced by 16 zero bytes: this store's epoch and serial, a wrong MAC. */
+    static #String forge(String id) {
+        int64 first = id.indexOf(".");
+        int64 second = id.indexOfFrom(".", first + (int64) 1);
+        String prefix #= id.substring(0, (int32) second + 1);
+        int8[] zeros = heap int8[16];
+        String mac #= Base64.encodeUrlSafe(zeros, (int64) 16);
+        String forged #= prefix + mac;
+        return #forged;
+    }
+
+    public static void add(TestRunner t) {
+        t.test("open issues an id that looks up OPEN, and each open a different one", () -> {
+            SessionStore store = heap SessionStore();
+            String a #= store.openAt(0);
+            String b #= store.openAt(0);
+            SelfTest.req(store.lookupAt(a, 0) == SessionState.OPEN, "the issued id is OPEN");
+            SelfTest.req(store.lookupAt(b, 0) == SessionState.OPEN, "the second issued id is OPEN");
+            SelfTest.req(!a.equals(b), "two opens issue different ids");
+            SelfTest.req(store.count() == 2, "both sessions are held");
+        });
+
+        t.test("an invalidated or idle-expired issued id looks up GONE", () -> {
+            ManualTimeSource clk = heap ManualTimeSource(1000);
+            SessionStore store = heap SessionStore();
+            store.setTimeSource(clk);
+            store.setIdleTtl(1000);
+            String a #= store.open();
+            String b #= store.open();
+            store.invalidate(a);
+            SelfTest.req(store.lookup(a) == SessionState.GONE, "invalidated is GONE");
+            clk.advance(1500);
+            SelfTest.req(store.lookup(b) == SessionState.GONE, "idle-expired is GONE");
+            store.setTimeSource(SessionStore.systemSource());
+        });
+
+        t.test("another store's id and an arbitrary string look up UNKNOWN", () -> {
+            SessionStore store = heap SessionStore();
+            SessionStore other = heap SessionStore();
+            String mine #= store.openAt(0);
+            String theirs #= other.openAt(0);
+            SelfTest.req(store.lookupAt(theirs, 0) == SessionState.UNKNOWN, "another epoch is UNKNOWN");
+            SelfTest.req(store.lookupAt("not-a-session", 0) == SessionState.UNKNOWN, "an arbitrary string is UNKNOWN");
+            SelfTest.req(store.lookupAt("", 0) == SessionState.UNKNOWN, "the empty string is UNKNOWN");
+            SelfTest.req(store.lookupAt("a.b.c", 0) == SessionState.UNKNOWN, "three dotted fields that are not an id are UNKNOWN");
+            SelfTest.req(store.lookupAt(mine, 0) == SessionState.OPEN, "the store's own id stays OPEN");
+        });
+
+        t.test("a forged id with this store's epoch and an issued serial is UNKNOWN, never GONE", () -> {
+            SessionStore store = heap SessionStore();
+            String a #= store.openAt(0);
+            String b #= store.openAt(0);
+            store.invalidate(a);
+            String forgedEnded #= IssuedSessionSelfTest.forge(a);
+            String forgedLive #= IssuedSessionSelfTest.forge(b);
+            SelfTest.req(store.lookupAt(forgedEnded, 0) == SessionState.UNKNOWN, "forged MAC on an ended serial is UNKNOWN");
+            SelfTest.req(store.lookupAt(forgedLive, 0) == SessionState.UNKNOWN, "forged MAC on a live serial is UNKNOWN");
+            SelfTest.req(store.lookupAt(a, 0) == SessionState.GONE, "the genuine ended id is GONE");
+        });
+
+        t.test("GONE and UNKNOWN lookups never create a session", () -> {
+            SessionStore store = heap SessionStore();
+            String a #= store.openAt(0);
+            store.invalidate(a);
+            SelfTest.req(store.count() == 0, "nothing held after invalidate");
+            SelfTest.req(store.lookupAt(a, 0) == SessionState.GONE, "GONE");
+            SelfTest.req(store.lookupAt("stranger", 0) == SessionState.UNKNOWN, "UNKNOWN");
+            SelfTest.req(store.count() == 0, "count unchanged by GONE and UNKNOWN");
+            SelfTest.req(store.resolveAt(a, 0) == null, "a GONE id resolves to no session");
+        });
+
+        t.test("an OPEN lookup refreshes the idle clock", () -> {
+            SessionStore store = heap SessionStore();
+            store.setIdleTtl(1000);
+            String a #= store.openAt(0);
+            SelfTest.req(store.lookupAt(a, 999) == SessionState.OPEN, "open at TTL-1");
+            SelfTest.req(store.lookupAt(a, 1001) == SessionState.OPEN, "still open at TTL+1 after the refresh");
+            SelfTest.req(store.lookupAt(a, 2100) == SessionState.GONE, "GONE once idle past the TTL");
+        });
+
+        t.test("10 000 open and invalidate cycles leave no entry and keep the answers right", () -> {
+            SessionStore store = heap SessionStore();
+            String first #= store.openAt(0);
+            store.invalidate(first);
+            int32 i = 0;
+            while (i < 10000) {
+                String id #= store.openAt(0);
+                store.invalidate(id);
+                i = i + 1;
+            }
+            SelfTest.req(store.count() == 0, "no entry held for ended sessions");
+            SelfTest.req(store.lookupAt(first, 0) == SessionState.GONE, "the first ended id is still GONE");
+            SelfTest.req(store.lookupAt("stranger", 0) == SessionState.UNKNOWN, "a stranger is still UNKNOWN");
+        });
+
+        t.test("SessionScope forwards open and lookup to the ambient store", () -> {
+            String a #= SessionScope.open();
+            SelfTest.req(SessionScope.lookup(a) == SessionState.OPEN, "ambient issued id is OPEN");
+            SessionScope.invalidate(a);
+            SelfTest.req(SessionScope.lookup(a) == SessionState.GONE, "ambient ended id is GONE");
+        });
+
+        t.test("create(id) with a caller id is OPEN, then UNKNOWN once invalidated", () -> {
+            SessionStore store = heap SessionStore();
+            store.createAt("caller-chosen", 0);
+            SelfTest.req(store.lookupAt("caller-chosen", 0) == SessionState.OPEN, "a created id is OPEN");
+            store.invalidate("caller-chosen");
+            SelfTest.req(store.lookupAt("caller-chosen", 0) == SessionState.UNKNOWN, "not issued, so not GONE");
+        });
+    }
+}

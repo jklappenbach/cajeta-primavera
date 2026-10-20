@@ -318,6 +318,7 @@ public class SelfTest {
         SelfTest.addFirstTouchTests(t);
         SelfTest.addRequestScopeTests(t);
         SelfTest.addSessionStoreTests(t);
+        IssuedSessionSelfTest.add(t);
         SelfTest.addSessionScopeTests(t);
         SelfTest.addClockSeamTests(t);
         SelfTest.addFiberTests(t);

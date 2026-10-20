@@ -41,6 +41,20 @@ public class SessionScope {
         SessionScope.STORE.create(sessionId);
     }
 
+    /**
+     * Open a session under an id the store issues and return the id (spec
+     * §2.1). The id is the caller's to hand to the client.
+     */
+    public static #String open() {
+        String id #= SessionScope.STORE.open();
+        return #id;
+    }
+
+    /** Whether `sessionId` is OPEN, GONE or UNKNOWN to the store (spec §2.2). */
+    public static SessionState lookup(String sessionId) {
+        return SessionScope.STORE.lookup(sessionId);
+    }
+
     /** Drop the session under `sessionId` and its components, e.g. at logout. */
     public static void invalidate(String sessionId) {
         SessionScope.STORE.invalidate(sessionId);

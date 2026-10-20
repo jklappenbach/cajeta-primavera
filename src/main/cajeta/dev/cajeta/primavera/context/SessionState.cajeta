@@ -1,0 +1,16 @@
+package dev.cajeta.primavera.context;
+
+/**
+ * What a session lookup found (primavera-live-sessions spec §2.2).
+ *
+ * - `OPEN`: a live session holds the id.
+ * - `GONE`: this store issued the id and the session has since been
+ *   invalidated, expired or displaced.
+ * - `UNKNOWN`: this store never issued the id: another host, this host before
+ *   a restart, a caller-chosen `create` id that has ended, or a forgery.
+ */
+public enum SessionState {
+    OPEN,
+    GONE,
+    UNKNOWN;
+}

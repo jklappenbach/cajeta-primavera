@@ -1,13 +1,18 @@
 package dev.cajeta.primavera.context;
 
+import cajeta.codec.Base64;
+import cajeta.codec.Base64Exception;
 import cajeta.collection.ArrayList;
 import cajeta.collection.HashMap;
 import cajeta.concurrent.Lock;
 import cajeta.concurrent.LockGuard;
+import cajeta.hash.Hash;
 import cajeta.lang.stream.Stream;
 import dev.cajeta.logging.Level;
 import dev.cajeta.logging.Logged;
 import dev.cajeta.logging.LogRecord;
+import dev.cajeta.crypto.HmacSha256;
+import dev.cajeta.crypto.SecureRandom;
 
 /**
  * Owning, id-keyed store of sessions, the server-side half of the `Session`
@@ -42,6 +47,15 @@ import dev.cajeta.logging.LogRecord;
  * actively using is a caller-coordination bug — the web tier (Phase 4)
  * serializes a session's requests or defers invalidation to request end.
  *
+ * ## Issued ids
+ * `open()` issues an id `<epoch>.<serial>.<mac>` in base64url: this store's
+ * random 8-byte epoch, a serial that advances only when an open succeeds, and
+ * an HMAC-SHA256 over epoch and serial under a per-store random key, truncated
+ * to 128 bits. `lookup(id)` answers OPEN for a live id, GONE for an id this
+ * store issued whose session has ended, and UNKNOWN for anything else, so the
+ * store accounts for every ended issued session without keeping it: the
+ * answer comes from the id itself (spec §2.2, §2.3, decision §7.1).
+ *
  * ## Testing
  * Two testability seams. The `...At(id, now)` forms take the timestamp
  * explicitly — fine-grained control for DIRECT store tests. The injectable
@@ -74,6 +88,13 @@ public class SessionStore {
     TimeSource clock;
     int64 idleTtlMillis;
     int64 absoluteTtlMillis;
+    // Issued ids (spec §7.1): the epoch tells this store's ids from any
+    // other's, the key makes the MAC unforgeable, and every serial below
+    // nextSerial was issued here. Serial 0 is never issued.
+    int8[] epoch;
+    String epochText;
+    int8[] macKey;
+    int64 nextSerial;
 
     public SessionStore() {
         HashMap<String, SessionEntry> created = heap HashMap<String, SessionEntry>();
@@ -83,6 +104,13 @@ public class SessionStore {
         this.clock = SessionStore.systemSource();
         this.idleTtlMillis = 0;
         this.absoluteTtlMillis = 0;
+        int8[] ep #= SecureRandom.bytes((int64) 8);
+        String et #= Base64.encodeUrlSafe(ep, (int64) 8);
+        int8[] k #= SecureRandom.bytes((int64) 32);
+        this.epoch #= ep;
+        this.epochText #= et;
+        this.macKey #= k;
+        this.nextSerial = 1;
     }
 
     /**
@@ -134,6 +162,139 @@ public class SessionStore {
 
     public void create(String id) {
         this.createAt(id, this.clock.now());
+    }
+
+    /** The 128-bit MAC over (epoch, serial) under this store's key. */
+    #int8[] macOf(int8[] serialBytes) {
+        int8[] msg = heap int8[16];
+        int32 i = 0;
+        while (i < 8) {
+            msg[i] = this.epoch[i];
+            msg[i + 8] = serialBytes[i];
+            i = i + 1;
+        }
+        int8[] full #= HmacSha256.mac(this.macKey, (int64) 32, msg, (int64) 16);
+        int8[] mac = heap int8[16];
+        i = 0;
+        while (i < 16) {
+            mac[i] = full[i];
+            i = i + 1;
+        }
+        return #mac;
+    }
+
+    static #int8[] serialBytesOf(int64 serial) {
+        int8[] b = heap int8[8];
+        int32 i = 0;
+        while (i < 8) {
+            b[i] = (int8) (serial >> (int64) (56 - 8 * i));
+            i = i + 1;
+        }
+        return #b;
+    }
+
+    /**
+     * Whether this store issued `id`: its epoch is this store's, its MAC
+     * verifies, and its serial is below the next one. A forged id with this
+     * epoch and a plausible serial fails the MAC (spec §2.3.1). The caller
+     * holds the gate (nextSerial is read under it).
+     */
+    boolean issuedHere(String id) {
+        int64 first = id.indexOf(".");
+        if (first <= (int64) 0) {
+            return false;
+        }
+        int64 second = id.indexOfFrom(".", first + (int64) 1);
+        if (second < (int64) 0 || id.indexOfFrom(".", second + (int64) 1) >= (int64) 0) {
+            return false;
+        }
+        String ep #= id.substring(0, (int32) first);
+        if (!ep.equals(this.epochText)) {
+            return false;
+        }
+        String sp #= id.substring((int32) first + 1, (int32) second);
+        String mp #= id.substring((int32) second + 1, (int32) id.byteLength());
+        try {
+            int8[] sb #= Base64.decode(sp);
+            int8[] mb #= Base64.decode(mp);
+            if (sb.count() != (int64) 8 || mb.count() != (int64) 16) {
+                return false;
+            }
+            int8[] want #= this.macOf(sb);
+            if (!Hash.constantTimeEquals(want, (int64) 16, mb, (int64) 16)) {
+                return false;
+            }
+            int64 serial = 0;
+            int32 i = 0;
+            while (i < 8) {
+                serial = (serial << (int64) 8) | (((int64) sb[i]) & (int64) 255);
+                i = i + 1;
+            }
+            return serial >= (int64) 1 && serial < this.nextSerial;
+        } catch (Base64Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Open a session under an id this store issues (spec §2.1) and return the
+     * id, owned by the caller. The serial advances only here, once the
+     * session is in the store.
+     */
+    public #String openAt(int64 now) {
+        LockGuard g #= this.gate.acquire();
+        int64 serial = this.nextSerial;
+        int8[] sb #= SessionStore.serialBytesOf(serial);
+        int8[] mac #= this.macOf(sb);
+        String st #= Base64.encodeUrlSafe(sb, (int64) 8);
+        String mt #= Base64.encodeUrlSafe(mac, (int64) 16);
+        String id #= this.epochText + "." + st + "." + mt;
+        String key #= id.substring(0, id.byteLength());
+        SessionEntry e = heap SessionEntry(now);
+        this.sessions.put(#key, #e);
+        this.nextSerial = serial + (int64) 1;
+        if (log.enabled(Level.DEBUG)) {
+            LogRecord r #= log.event(Level.DEBUG, "session opened");
+            r.i64("serial", serial);
+            log.emit(#r);
+        }
+        return #id;
+    }
+
+    public #String open() {
+        String id #= this.openAt(this.clock.now());
+        return #id;
+    }
+
+    /**
+     * Which of OPEN, GONE or UNKNOWN `id` is (spec §2.2). OPEN refreshes the
+     * idle clock, as `resolve` does; `resolve(id)` hands back the session
+     * itself. A live session past its TTL is evicted here and answers as an
+     * ended one. GONE and UNKNOWN never create a session (§2.4).
+     */
+    public SessionState lookupAt(String id, int64 now) {
+        LockGuard g #= this.gate.acquire();
+        SessionEntry e = this.sessions.get(id);
+        if (e != null) {
+            if (!this.isExpired(e, now)) {
+                e.lastAccessed = now;
+                return SessionState.OPEN;
+            }
+            this.sessions.remove(id);
+            if (log.enabled(Level.DEBUG)) {
+                LogRecord r #= log.event(Level.DEBUG, "session expired on lookup");
+                r.str("id", id);
+                log.emit(#r);
+            }
+        }
+        if (this.issuedHere(id)) {
+            return SessionState.GONE;
+        }
+        return SessionState.UNKNOWN;
+    }
+
+    public SessionState lookup(String id) {
+        return this.lookupAt(id, this.clock.now());
     }
 
     /**
