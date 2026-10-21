@@ -18,8 +18,8 @@
         },
         "capabilities": [],
         "dependencies": {
-            "dev.cajeta.primavera": "0.5.0",
-            "dev.cajeta.http":      "0.9.0",
+            "dev.cajeta.primavera": "0.5.1",
+            "dev.cajeta.http": "0.9.1",
             "dev.cajeta.cloud":     "0.4.0",
             "dev.cajeta.crypto":    "0.1.0",
             "dev.cajeta.codec":     "0.8.7"

@@ -55,6 +55,9 @@ public class Connection implements WebSocketHandler {
     // A writer fiber was handed this connection and will run writeLoop on
     // it, so onClose must wait for that to end before the connection drops.
     boolean dispatched;
+    // A close code the writer fiber sends as a close frame before it stops
+    // (server shutdown, §3.2), or 0.
+    int32 farewell;
     Channel<int32> wake;
     Channel<int32> done;
 
@@ -76,6 +79,7 @@ public class Connection implements WebSocketHandler {
         this.writing = false;
         this.refused = false;
         this.dispatched = false;
+        this.farewell = 0;
         this.wake = heap Channel<int32>(1);
         this.done = heap Channel<int32>(1);
         return;
@@ -127,10 +131,38 @@ public class Connection implements WebSocketHandler {
         h(c, code);
     }
 
-    // Aborts with `code` (server shutdown, §3.2): the receive loop ends and
-    // the close hook sees `code`. No close frame goes first: on cajeta-http
-    // 0.9.0 a server-side close followed by abort leaves `next()` parked and
-    // the close hook never runs, so the peer sees an abnormal closure (1006).
+    // Says goodbye with `code` (server shutdown, §3.2): no more sends queue,
+    // and the writer fiber sends a close frame with `code` once the queue has
+    // drained, so a peer that replies closes in the handshake and the close
+    // hook sees `code`. The close is the writer's, since a close parked on a
+    // full socket must never hold the registry's gate; a connection with no
+    // writer is aborted instead. The server aborts whoever is still open
+    // after its grace (`abortWith`), which cajeta-http 0.9.1 allows beside a
+    // parked close.
+    void goodbye(int32 code) {
+        boolean noWriter = false;
+        {
+            LockGuard g #= this.gate.acquire();
+            if (this.closing) {
+                return;
+            }
+            this.closing = true;
+            this.farewell = code;
+            noWriter = !this.dispatched;
+            if (!noWriter && !this.signalled) {
+                this.signalled = true;
+                this.wake.send(1);
+            }
+        }
+        if (noWriter) {
+            this.abortWith(code);
+        }
+        return;
+    }
+
+    // Aborts with `code`: the receive loop ends and the close hook sees
+    // `code`. The peer sees an abnormal closure unless a close frame went
+    // first (`goodbye`).
     void abortWith(int32 code) {
         if (this.ws != null) {
             try {
@@ -266,6 +298,23 @@ public class Connection implements WebSocketHandler {
                     this.signalled = false;
                 }
                 going = this.drain();
+                if (going) {
+                    int32 bye = 0;
+                    {
+                        LockGuard g #= this.gate.acquire();
+                        bye = this.farewell;
+                    }
+                    if (bye != 0) {
+                        // The queue is drained: the close frame goes last,
+                        // and the writer stops.
+                        try {
+                            String none = "";
+                            this.ws.close(bye, none);
+                        } catch (Exception e) {
+                        }
+                        going = false;
+                    }
+                }
             }
         }
         this.done.send(1);

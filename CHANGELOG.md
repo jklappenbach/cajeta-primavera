@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.1
+
+On cajeta-http 0.9.1. Server shutdown sends each open WebSocket connection a close frame
+with 1001 before ending it: each connection's writer fiber sends the frame once its queue
+has drained, a peer that replies closes in the handshake, and whoever is still open after
+300 ms (a peer that does not reply or does not read) is aborted with the same code. Peers
+now see 1001 where 0.5.0 gave them an abnormal closure (1006); the close hook still sees
+1001 either way. The abort beside a parked close needs cajeta-http 0.9.1, which fixed a
+crash in that shape (cajeta open-defects D-19).
+
 ## 0.5.0
 
 What cabra needs to run on primavera (primavera-live-sessions). On cajeta v0.44.0,

@@ -351,7 +351,7 @@ public final class HooksSelfTest {
             System.stdout.println("  hooks: on shutdown the peer saw " + seen);
             SelfTest.req(HooksSelfTest.closes.load() == 1 && HooksSelfTest.lastCode == 1001,
                          "the close handler ran once with 1001");
-            SelfTest.req(seen != 0, "the peer saw its connection close");
+            SelfTest.req(seen == 1001, "the peer received a close frame with 1001, not an abnormal closure");
         });
     }
 }

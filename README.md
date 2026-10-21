@@ -16,7 +16,10 @@ patterns.
 > opinion isn't yours, you keep the substrate and build your own — nothing in the
 > core forces primavera on you.
 
-## Status — v0.5.0
+## Status — v0.5.1
+
+0.5.1 (on cajeta-http 0.9.1): server shutdown sends each WebSocket peer a close frame with 1001
+before ending the connection, so peers see 1001 rather than an abnormal closure.
 
 | Capability | State |
 |---|---|

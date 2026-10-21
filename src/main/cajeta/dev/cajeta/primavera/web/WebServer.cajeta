@@ -182,12 +182,24 @@ public final class WebServer {
      */
     public boolean shutdown(Duration deadline) {
         this.sweepStop.store(1);
-        this.registry.shutdown();
-        // Each aborted connection's receive loop ends and runs its close
-        // hook, which takes it out of the registry. Wait for that before the
-        // http drain: the drain ends upgraded connections' fibers before
-        // their close hooks run, and their writer fibers then never stop.
         int64 until = Clock.nanoTime() + deadline.toNanos();
+        // Each open connection's writer sends a close frame with 1001; a
+        // peer that replies closes in the handshake and the close hook runs
+        // with 1001. Whoever is still open after a short grace, a peer that
+        // does not reply or does not read, is aborted with the same code.
+        this.registry.shutdown();
+        int64 grace = Clock.nanoTime() + (int64) 300000000;
+        if (grace > until) {
+            grace = until;
+        }
+        while (this.registry.count() > 0 && Clock.nanoTime() < grace) {
+            Fiber.sleep(Duration.ofMillis(5));
+        }
+        this.registry.closeAll(1001);
+        // Each close hook takes its connection out of the registry. Wait for
+        // that before the http drain: the drain ends upgraded connections'
+        // fibers before their close hooks run, and their writer fibers then
+        // never stop.
         while (this.registry.count() > 0 && Clock.nanoTime() < until) {
             Fiber.sleep(Duration.ofMillis(5));
         }
