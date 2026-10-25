@@ -4,16 +4,16 @@
     "version": "0.46.3"
   },
   "lockfile-version": 1,
-  "manifest-checksum": "sha256:7299d4961a8cd4538f546594fac8df35e191a649faf05d5ef8c9a14aeb28aeb9",
+  "manifest-checksum": "sha256:986c52e4841b982115c5a61d618a47291b71babc9efbdbe504c3767bf9c0d0b4",
   "melts": [],
   "overrides": [],
   "packages": [
     {
-      "checksum": "sha256:e862a77301d490e2a34332cbd209c9891618a291b184ebd1ac860a3c38692226",
+      "checksum": "sha256:2708245655f5d249324a1f089123dffe012e997d1df62fe5e10c86eea2d19d62",
       "name": "dev.cajeta.bench",
       "provided-by": "explicit",
       "resolved-from": "olla",
-      "version": "0.1.1"
+      "version": "0.1.5"
     }
   ],
   "plugins": [],
@@ -28,5 +28,5 @@
     "target": "",
     "workspace.root": ""
   },
-  "resolved-at": "2026-10-25T18:51:15Z"
+  "resolved-at": "2026-10-25T22:25:58Z"
 }

@@ -1,7 +1,9 @@
 package bench.primavera;
 
+import cajeta.collection.ArrayList;
 import cajeta.io.file.Path;
 import cajeta.lang.String;
+import dev.cajeta.bench.Benchmark;
 import dev.cajeta.bench.detect.Sys;
 
 /**
@@ -10,6 +12,13 @@ import dev.cajeta.bench.detect.Sys;
  * the per-app build status it writes into build/status/<key>-<app>, and the
  * toolchain versions in build/toolchains.tsv. Paths are relative to bench/,
  * the directory the harness runs in.
+ *
+ * It also answers every row's identity from a harness variant key, `<key>`
+ * or `<key>@<connections>` (primavera, spring-boot@64, ...): the language,
+ * platform and versions of the key's app line, the page's variant label, the
+ * flags, and why a key cannot run here. The benchmarks' dev.cajeta.bench
+ * hooks (languageFor, platformFor, libraryFor, variantLabel, flagsFor,
+ * supportsVariant, skipReasonFor) are these functions.
  */
 public final class Apps {
 
@@ -161,5 +170,129 @@ public final class Apps {
             return (int64) -1;
         }
         return v;
+    }
+
+    // ---- variants and row identity ------------------------------------------
+
+    /** One variant key per app key (`key`, or `key@c` per connection count), filtered by CAJETA_BENCH_PLATFORMS. */
+    public static #ArrayList<String> variants(String keyList, String connList) {
+        ArrayList<String> v = heap ArrayList<String>();
+        String[] keys #= Apps.words(keyList, 0);
+        String[] conns #= Apps.words(connList, 0);
+        String only = System.env.get("CAJETA_BENCH_PLATFORMS");
+        int32 i = 0;
+        while (i < (int32) keys.count()) {
+            if (only != null && !Apps.listed(only, keys[i])) {
+                i = i + 1;
+                continue;
+            }
+            if (conns.count() == 0) {
+                v.add("" + keys[i]);
+            } else {
+                int32 c = 0;
+                while (c < (int32) conns.count()) {
+                    v.add(keys[i] + "@" + conns[c]);
+                    c = c + 1;
+                }
+            }
+            i = i + 1;
+        }
+        return v;
+    }
+
+    /** True when `key` is one of the space- or comma-separated words of `list`. */
+    public static boolean listed(String list, String key) {
+        String norm #= list.replace(",", " ");
+        String[] ws #= Apps.words(norm, 0);
+        int32 i = 0;
+        while (i < (int32) ws.count()) {
+            if (ws[i].equals(key)) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    public static #String keyOf(String variant) {
+        int64 at = variant.indexOf("@");
+        if (at < 0) {
+            return "" + variant;
+        }
+        return variant.substring(0, (int32) at);
+    }
+
+    public static int32 connsOf(String variant) {
+        int64 at = variant.indexOf("@");
+        if (at < 0) {
+            return 0;
+        }
+        String c #= variant.substring((int32) at + 1, variant.byteLength());
+        return (int32) Apps.number(" " + c, " ");
+    }
+
+    /** The page's variant label: `64 connections`, or "" for a single-variant page. */
+    public static #String labelOf(String variant) {
+        int32 c = Apps.connsOf(variant);
+        if (c <= 0) {
+            return "";
+        }
+        return "" + c + " connections";
+    }
+
+    /** Column `i` of the line of the variant's key for `app`. */
+    public static #String fieldOf(String variant, String app, int32 i) {
+        String k #= Apps.keyOf(variant);
+        return Apps.field(k, app, i);
+    }
+
+    /** The flags column: primavera's FLAGS file for `app`, `as shipped` for a competitor. */
+    public static #String flagsOf(String variant, String app) {
+        String lang #= Apps.fieldOf(variant, app, Apps.LANGUAGE());
+        if (!lang.equals("cajeta")) {
+            return "as shipped";
+        }
+        String fl #= Sys.readText("apps/" + app + "/FLAGS");
+        return fl.trim();
+    }
+
+    /** Why the variant's key cannot run here, or "" when it can. */
+    public static #String whyNot(String variant, String app) {
+        String key #= Apps.keyOf(variant);
+        String ln #= Apps.line(key, app);
+        if (ln.isEmpty()) {
+            return "no " + app + " app for " + key + " in build/apps.tsv (run scripts/build-all.sh)";
+        }
+        String st #= Apps.status(key, app);
+        if (st.equals("ok")) {
+            return "";
+        }
+        if (st.isEmpty()) {
+            return "no build status for " + key + "-" + app + " (run scripts/build-all.sh)";
+        }
+        if (st.startsWith("skipped: ")) {
+            return st.substring(9, st.byteLength());
+        }
+        return "" + st;
+    }
+
+    /** setup(): fail without build-all.sh's output; every toolchain version into env.csv as toolchain_<name>. */
+    public static void setupFor(Benchmark b) {
+        String text #= Sys.readText("build/toolchains.tsv");
+        if (text.isEmpty()) {
+            throw heap Exception("build/toolchains.tsv is missing: run scripts/build-all.sh first");
+        }
+        int32 n = text.byteLength();
+        int32 at = 0;
+        while (at < n) {
+            int32 end = Sys.lineEnd(text, at);
+            String ln #= text.substring(at, end);
+            String name #= Apps.col(ln, 0);
+            String value #= Apps.col(ln, 1);
+            if (!name.isEmpty()) {
+                b.envExtra("toolchain_" + name, value);
+            }
+            at = end + 1;
+        }
     }
 }

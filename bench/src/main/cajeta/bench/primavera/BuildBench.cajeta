@@ -1,155 +1,158 @@
 package bench.primavera;
 
 import cajeta.lang.String;
+import cajeta.process.Command;
+import cajeta.process.ProcessResult;
+import cajeta.time.Clock;
+import dev.cajeta.bench.Harness;
+import dev.cajeta.bench.ServiceBenchmark;
 
 /**
  * `primavera/build-time` (Build.md): a clean build of the register-user
- * service to a runnable artifact. Each trial is one `tools/svc.py build`
- * under ExternalBenchmark: the app's clean command (untimed), then its build
- * command, timed by the helper; the row's figure is that build alone. Maven
- * builds run offline against a warm ~/.m2 and dotnet against a restored NuGet
- * cache, as Cajeta builds against the local Olla store: dependency downloads
- * are not timed. The check is the page's: the artifact runs, which one
- * launch to the first 200 from GET /health proves after the trials.
+ * service to a runnable artifact. Each trial runs the app's clean command
+ * (untimed), then its build command (`sh -c` in the app's directory, output
+ * to the log), and reports the build alone (reportedNanos; notes say
+ * `reported`). Maven builds run offline against a warm ~/.m2 and dotnet
+ * against a restored NuGet cache, as Cajeta builds against the local Olla
+ * store: dependency downloads are not timed. The check is the page's: the
+ * artifact runs, which one launch to the first 200 from GET /health proves
+ * after the trials (ServiceBenchmark's start, readiness and stop).
  *
- * No warmup build. In smoke mode one build per platform is measured (a clean
- * Cajeta release build takes minutes); the trials column says how many.
+ * No warmup build: a clean Cajeta build takes minutes. In smoke mode the
+ * harness still runs one warmup and three trials; the warmup builds nothing,
+ * the first trial builds, and the other two report the first one's time, as
+ * the row's notes say.
  */
 public class BuildBench extends ServiceBench {
-    public int64[] took;
-    public int32 n;
+    public int64 firstNs;
+    public int32 built;
+    public int32 repeated;
     public String runsNote;
 
-    public BuildBench(String ledger, String keys, int32 portBase) {
-        super("build-time", ledger, "web", keys, "", portBase);
-        this.took = heap int64[16];
-        this.n = 0;
+    public BuildBench(String keys, int32 portBase) {
+        super("build-time", "web", keys, "", portBase);
+        this.firstNs = (int64) -1;
+        this.built = 0;
+        this.repeated = 0;
         this.runsNote = "";
         this.iterations(0, 3);
-        this.timeoutMillis((int64) 3600000);
         return;
     }
 
     public boolean supportsVariant(String variant) {
-        this.identify(variant);
-        String k #= ServiceBench.keyOf(variant);
-        String b #= Apps.field(k, "web", Apps.BUILD());
+        String b #= Apps.fieldOf(variant, "web", Apps.BUILD());
         if (b.equals("-")) {
-            this.reason = "no build step";
             return false;
         }
-        String why #= this.whyNot(k);
-        this.reason = "" + why;
-        return why.isEmpty();
+        return super.supportsVariant(variant);
     }
 
+    public String skipReasonFor(String variant) {
+        String b #= Apps.fieldOf(variant, "web", Apps.BUILD());
+        if (b.equals("-")) {
+            return "no build step";
+        }
+        return Apps.whyNot(variant, "web");
+    }
+
+    /** Nothing starts here: the server runs once, in checkResult. */
     public void prepare(String variant) {
-        this.begin(variant);
-        this.n = 0;
+        this.firstNs = (int64) -1;
+        this.built = 0;
+        this.repeated = 0;
         this.runsNote = "";
+        this.setNote(variant, "");
+        this.lastVariant = "" + variant;
         return;
-    }
-
-    public #String[] argvFor(String variant) {
-        String[] a = heap String[13];
-        a[0] = "python3";
-        a[1] = "tools/svc.py";
-        a[2] = "build";
-        a[3] = "--dir";
-        String d #= this.dir();
-        a[4] = "" + d;
-        a[5] = "--clean";
-        String c #= Apps.field(this.key, "web", Apps.CLEAN());
-        a[6] = "" + c;
-        a[7] = "--build";
-        String b #= Apps.field(this.key, "web", Apps.BUILD());
-        a[8] = "" + b;
-        a[9] = "--log";
-        String log #= this.absLog();
-        a[10] = "" + log;
-        a[11] = "--timeout";
-        a[12] = "3000";
-        return a;
     }
 
     public void runVariant(String variant, int32 iterations) {
         this.lastVariant = "" + variant;
         int32 i = 0;
         while (i < iterations) {
-            boolean measure = !this.warming();
-            if (this.smoke && this.trialIndex() >= 1) {
-                measure = false;
-            }
-            if (measure) {
-                this.execute(variant);
-                if (this.n < 16) {
-                    this.took[this.n] = Apps.number(this.lastStdout, "build_ns=");
-                    this.n = this.n + 1;
+            if (this.isWarmup()) {
+                // no warmup build
+            } else if (this.smoke && this.built >= 1) {
+                this.reportedNanos(this.firstNs);
+                this.repeated = this.repeated + 1;
+            } else {
+                String c #= Apps.fieldOf(variant, "web", Apps.CLEAN());
+                if (!c.equals("-")) {
+                    this.shell(variant, c, "clean");
                 }
+                String b #= Apps.fieldOf(variant, "web", Apps.BUILD());
+                int64 t0 = Clock.nanoTime();
+                this.shell(variant, b, "build");
+                int64 took = Clock.nanoTime() - t0;
+                this.reportedNanos(took);
+                if (this.built == 0) {
+                    this.firstNs = took;
+                }
+                this.built = this.built + 1;
             }
-            this.calls = this.calls + 1;
             i = i + 1;
         }
+        this.composeNote(variant);
         return;
     }
 
-    /** One launch of the built artifact to the first 200: the page's check. */
-    public boolean artifactRuns() {
-        int32 p = this.nextPort();
-        String run #= Apps.field(this.key, "web", Apps.RUN());
-        String[] words #= Apps.words(run, p);
-        int32 w = (int32) words.count();
-        String[] a = heap String[16 + w];
-        a[0] = "python3";
-        a[1] = "tools/svc.py";
-        a[2] = "launch";
-        a[3] = "--dir";
-        String d #= this.dir();
-        a[4] = "" + d;
-        a[5] = "--port";
-        a[6] = "" + p;
-        a[7] = "--log";
-        String log #= this.absLog();
-        a[8] = "" + log;
-        a[9] = "--pids";
-        String pids #= this.absPids();
-        a[10] = "" + pids;
-        a[11] = "--timeout";
-        a[12] = "180";
-        a[13] = "--settle";
-        a[14] = "0";
-        a[15] = "--";
-        int32 i = 0;
-        while (i < w) {
-            a[16 + i] = "" + words[i];
-            i = i + 1;
+    /** `sh -c <cmd>` in the app's directory, output appended to the log; throws unless it exits 0. */
+    public void shell(String variant, String cmd, String what) {
+        String d #= Apps.fieldOf(variant, "web", Apps.DIR());
+        String log #= this.absLog(variant);
+        String[] a = heap String[3];
+        a[0] = "sh";
+        a[1] = "-c";
+        a[2] = "exec >>'" + log + "' 2>&1 </dev/null; " + cmd;
+        Command c = heap Command(#a);
+        c.workingDir(#d);
+        int64 limit = (int64) 3000000;
+        c.timeoutMillis(limit);
+        ProcessResult r #= c.run();
+        if (!r.launched()) {
+            throw heap Exception("could not start sh for the " + what);
         }
-        Run r #= Run.of(#a);
-        if (r.code != 0) {
-            String why #= r.why();
-            this.runsNote = "artifact did not run: " + why;
-            return false;
+        if (r.timedOut()) {
+            throw heap Exception(what + " passed 3000 s");
         }
-        int64 ns = Apps.number(r.out, "first200_ns=");
-        this.runsNote = "artifact runs (first 200 after " + (ns / (int64) 1000000) + " ms)";
-        return true;
+        this.lastExitCode = r.exitCode();
+        if (r.exitCode() != 0) {
+            String tail #= ServiceBenchmark.tailOf(log);
+            throw heap Exception(what + " exited " + r.exitCode() + tail);
+        }
     }
 
+    public void composeNote(String variant) {
+        String c #= Apps.fieldOf(variant, "web", Apps.CLEAN());
+        String b #= Apps.fieldOf(variant, "web", Apps.BUILD());
+        String s = "timed: `" + b + "` after `" + c + "` (untimed)";
+        if (this.repeated > 0) {
+            s = s + "; smoke: " + this.built + " build measured, its time repeated for the other "
+                + this.repeated + " trial(s); the warmup built nothing";
+        }
+        if (!this.runsNote.isEmpty()) {
+            s = s + "; " + this.runsNote;
+        }
+        this.setNote(variant, s);
+    }
+
+    /** The built artifact runs: one launch to the first 200 from GET /health. */
     public boolean checkResult() {
-        if (this.lastExitCode != 0 || this.n == 0) {
+        if (this.built == 0) {
             return false;
         }
-        boolean runs = this.artifactRuns();
-        String nm = this.name();
         String v = this.lastVariant;
-        String lg = this.ledger;
-        Stats.times(lg, nm, v, this.took, this.n);
-        Ledger.putInt(lg, nm, v, "trials", (int64) this.n);
-        Ledger.putInt(lg, nm, v, "warmup", (int64) 0);
-        Ledger.putInt(lg, nm, v, "peak_rss_kb", (int64) -1);
-        String c #= Apps.field(this.key, "web", Apps.CLEAN());
-        String b #= Apps.field(this.key, "web", Apps.BUILD());
-        Ledger.put(lg, nm, v, "notes+", "timed: `" + b + "` after `" + c + "` (untimed); " + this.runsNote);
+        boolean runs = true;
+        try {
+            this.startService(v);
+            this.runsNote = "artifact runs (first 200 after " + (this.lastReadyNanos / (int64) 1000000) + " ms)";
+        } catch (Throwable e) {
+            runs = false;
+            String m #= Harness.messageOf(e);
+            this.runsNote = "artifact did not run: " + m;
+        }
+        this.stopService();
+        this.composeNote(v);
         return runs;
     }
 

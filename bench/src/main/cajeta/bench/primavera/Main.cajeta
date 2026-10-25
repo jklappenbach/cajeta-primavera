@@ -7,40 +7,26 @@ import dev.cajeta.bench.Benchmark;
 
 /**
  * primavera against Spring Boot and its peers (cajeta bench/primavera/): one
- * Benchmark per page id, each measuring every platform the page names, and
- * the rows' identity and external figures written on afterwards from the
- * ledger (see {@link Ledger}). Run from bench/, after scripts/build-all.sh.
+ * Benchmark per page id, each measuring every platform the page names; every
+ * column of every row is the harness's (dev.cajeta.bench 0.1.5). Run from
+ * bench/, after scripts/build-all.sh.
  */
 public final class Main {
 
     public static int32 main(String[] args) {
-        String ledger #= Ledger.pathFor(args);
-        boolean running = Ledger.running(args);
-        if (running) {
-            Ledger.reset(ledger);
-        }
         String service = ServiceBench.SERVICE();
         ArrayList<Benchmark> b = heap ArrayList<Benchmark>();
-        b.add(heap ThroughputBench("register-user-json", ledger, service, "64 512", 61100,
+        b.add(heap ThroughputBench("register-user-json", service, "64 512", 61100,
             "POST", "/users", "contract/register.json", "201",
             "health,register,no-auth,wrong-token,missing-username,missing-password,short-username,short-password"));
-        b.add(heap ThroughputBench("templated-page", ledger,
+        b.add(heap ThroughputBench("templated-page",
             "primavera spring-boot quarkus-jvm aspnetcore fastapi", "64", 61160,
             "GET", "/fortunes", "", "200", "health,fortunes"));
-        b.add(heap LaunchBench("cold-start", ledger, service, 61220, "cold"));
-        b.add(heap LaunchBench("idle-rss", ledger, service, 61280, "idle"));
-        b.add(heap LaunchBench("loaded-rss", ledger, service, 61340, "loaded"));
-        b.add(heap BuildBench(ledger, service, 61400));
-        b.add(heap DiBench(ledger, "primavera spring-boot quarkus-jvm micronaut-jvm aspnetcore fastapi"));
-        int32 rc = BenchMain.run(args, b);
-        if (running) {
-            String out #= Ledger.outFor(args);
-            int32 amended = Ledger.apply(out, ledger);
-            if (amended != 0) {
-                System.stdout.println("bench: tools/amend.py failed on " + out);
-                return 1;
-            }
-        }
-        return rc;
+        b.add(heap LaunchBench("cold-start", service, 61220, "cold"));
+        b.add(heap LaunchBench("idle-rss", service, 61280, "idle"));
+        b.add(heap LaunchBench("loaded-rss", service, 61340, "loaded"));
+        b.add(heap BuildBench(service, 61400));
+        b.add(heap DiBench("primavera spring-boot quarkus-jvm micronaut-jvm aspnetcore fastapi"));
+        return BenchMain.run(args, b);
     }
 }

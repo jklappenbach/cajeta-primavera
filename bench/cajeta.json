@@ -10,13 +10,13 @@
     //   competitors/<framework>/{web,di}  Spring Boot, Quarkus, Micronaut, ASP.NET Core, FastAPI
     //   contract/                         the service contract and its golden bytes
     //   di/                               the DI graph description and its generator
-    //   tools/                            svc.py (launch, RSS, build timing), amend.py
     //   scripts/build-all.sh              builds every app, capped, and writes build/status
     //   test/bench_smoke.sh               the smoke test
     //
-    // Run from this directory. The four capabilities are dev.cajeta.bench's
-    // own (clock, filesystem, env, process); this project also starts the
-    // servers, oha and its helpers through cajeta.process.
+    // Run from this directory. The five capabilities are dev.cajeta.bench's
+    // own (clock, filesystem, env, process, and network for ServiceBenchmark's
+    // readiness probe and Ports); this project also runs oha and
+    // contract/check.py through cajeta.process.
     "details": {
         "name":                "dev.cajeta.bench.primavera",
         "version":             "0.1.0",
@@ -27,8 +27,8 @@
     },
 
     "settings": {
-        "capabilities": ["filesystem", "clock", "env", "process"],
-        "dependencies": { "dev.cajeta.bench": "0.1.1" },
+        "capabilities": ["filesystem", "clock", "env", "process", "network"],
+        "dependencies": { "dev.cajeta.bench": "0.1.5" },
         "repositories": [
             { "name": "olla", "url": "https://olla.cajeta.dev", "priority": 0 }
         ],

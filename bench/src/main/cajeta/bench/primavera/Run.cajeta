@@ -5,7 +5,7 @@ import cajeta.process.Command;
 import cajeta.process.ProcessResult;
 import dev.cajeta.bench.detect.Sys;
 
-/** A helper command run to completion (svc.py wait, check.py): its exit code and output. */
+/** A helper command run to completion (contract/check.py): its exit code and output. */
 public final class Run {
     public int32 code;
     public String out;

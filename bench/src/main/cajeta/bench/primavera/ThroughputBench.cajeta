@@ -3,28 +3,24 @@ package bench.primavera;
 import cajeta.codec.json.Json;
 import cajeta.codec.json.JsonObject;
 import cajeta.codec.json.JsonValue;
-import cajeta.io.file.File;
-import cajeta.io.file.FileWriter;
-import cajeta.io.file.OpenMode;
 import cajeta.lang.String;
-import cajeta.process.Command;
-import cajeta.process.Process;
-import dev.cajeta.bench.report.Memory;
 import dev.cajeta.bench.detect.Sys;
 
 /**
  * An oha-driven row (Rest.md register-user-json, Templates.md
- * templated-page). Per platform the server is started once, waited for,
- * and byte-compared against the contract (contract/check.py) before any
- * load; a server that differs fails its rows. Each trial is one oha run of a
- * fixed duration at the variant's connection count, keep-alive, `-w` so
- * requests in flight at the deadline are not counted as errors.
+ * templated-page). Per variant the harness starts the platform's server and
+ * waits for it (ServiceBenchmark); prepare then byte-compares it against the
+ * contract (contract/check.py) before any load, and a server that differs
+ * fails its row. Each trial is one oha run of a fixed duration at the
+ * variant's connection count, keep-alive, `-w` so requests in flight at the
+ * deadline are not counted as errors; the warmup's run is shorter.
  *
- * Requests per second are parsed from oha's JSON stdout onto the throughput
- * columns (unit `req/s`, the median trial); the time columns are oha's
- * latency (min = fastest, median = p50, mean = average, p95 = p95, each the
- * median over trials). Any error, or any status but the expected one, fails
- * the row. peak_rss_kb is the server's VmHWM after the trials.
+ * Each trial reports oha's req/s (reportedThroughput, unit `req/s`; the row's
+ * throughput is the median trial) and oha's latency (reportedStats: min =
+ * fastest, median = p50, mean = average, p95 = p95; each column the median
+ * over trials). Any error, or any status but the expected one, fails the row.
+ * peak_rss_kb is the server's VmHWM, sampled by ServiceBenchmark while oha
+ * runs.
  */
 public class ThroughputBench extends ServiceBench {
     public String method;
@@ -32,47 +28,25 @@ public class ThroughputBench extends ServiceBench {
     public String bodyFile;
     public String expect;
     public String probes;
-    public String engineNote;
-    public Process server;
-    public String serverKey;
-    public String serverError;
-    public int32 serverPort;
-    public int32 serverPid;
     public int64[] rps;
-    public int64[] p50;
-    public int64[] p95;
     public int64[] p99;
-    public int64[] fastest;
-    public int64[] average;
     public int64 requests;
     public int32 n;
-    public int64 hwm;
     public int32 warmSeconds;
     public int32 trialSeconds;
 
-    public ThroughputBench(String page, String ledger, String keys, String conns, int32 portBase,
+    public ThroughputBench(String page, String keys, String conns, int32 portBase,
                            String method, String path, String bodyFile, String expect, String probes) {
-        super(page, ledger, "web", keys, conns, portBase);
+        super(page, "web", keys, conns, portBase);
         this.method = "" + method;
         this.path = "" + path;
         this.bodyFile = "" + bodyFile;
         this.expect = "" + expect;
         this.probes = "" + probes;
-        this.engineNote = "";
-        this.server = null;
-        this.serverKey = "";
-        this.serverError = "";
-        this.serverPort = 0;
-        this.serverPid = -1;
         this.rps = heap int64[64];
-        this.p50 = heap int64[64];
-        this.p95 = heap int64[64];
         this.p99 = heap int64[64];
-        this.fastest = heap int64[64];
-        this.average = heap int64[64];
         this.requests = 0;
         this.n = 0;
-        this.hwm = -1;
         this.iterations(1, 5);
         this.timeoutMillis((int64) 600000);
         if (this.smoke) {
@@ -89,118 +63,37 @@ public class ThroughputBench extends ServiceBench {
         return "req/s";
     }
 
-    // ---- the server ----------------------------------------------------------
-
-    public void stopServer() {
-        if (this.server != null) {
-            this.server.kill();
-            this.server.close();
-            this.server = null;
-        }
-        this.serverKey = "";
-        return;
-    }
-
-    public void startServer() {
-        this.stopServer();
-        this.serverKey = "" + this.key;
-        this.serverError = "";
-        int32 p = this.nextPort();
-        String run #= Apps.field(this.key, "web", Apps.RUN());
-        String[] words #= Apps.words(run, p);
-        int32 w = (int32) words.count();
-        String log #= this.absLog();
-        String[] argv = heap String[w + 4];
-        argv[0] = "/bin/sh";
-        argv[1] = "-c";
-        argv[2] = "exec \"$@\" >>'" + log + "' 2>&1";
-        argv[3] = "sh";
-        int32 i = 0;
-        while (i < w) {
-            argv[i + 4] = "" + words[i];
-            i = i + 1;
-        }
-        Command c = heap Command(#argv);
-        String d #= this.dir();
-        c.workingDir(#d);
-        Process pr #= c.start();
-        if (!pr.launched()) {
-            this.serverError = "could not start " + this.key;
-            return;
-        }
-        int32 pid = pr.pid();
-        this.server #= pr;
-        this.serverPort = p;
-        this.serverPid = pid;
-        String pids #= this.absPids();
-        FileWriter pf #= File.openWrite(pids, OpenMode.APPEND);
-        pf.writeString("" + pid + " " + this.key + "\n");
-        pf.close();
-
-        String[] wv = heap String[12];
-        wv[0] = "python3";
-        wv[1] = "tools/svc.py";
-        wv[2] = "wait";
-        wv[3] = "--port";
-        wv[4] = "" + p;
-        wv[5] = "--pid";
-        wv[6] = "" + pid;
-        wv[7] = "--log";
-        wv[8] = "" + log;
-        wv[9] = "--timeout";
-        wv[10] = "180";
-        wv[11] = "--";
-        Run up #= Run.of(#wv);
-        if (up.code != 0) {
-            String why #= up.why();
-            this.serverError = this.key + " did not come up: " + why;
-            return;
-        }
+    /** The harness has started the server (ServiceBenchmark.prepare); compare it with the contract before any load. */
+    public void prepare(String variant) {
+        this.n = 0;
+        this.requests = 0;
+        this.setNote(variant, "");
+        super.prepare(variant);
         String[] cv = heap String[6];
         cv[0] = "python3";
         cv[1] = "contract/check.py";
         cv[2] = "--port";
-        cv[3] = "" + p;
+        cv[3] = "" + this.port;
         cv[4] = "--only";
         cv[5] = "" + this.probes;
         Run chk #= Run.of(#cv);
         if (chk.code != 0) {
             String why #= Sys.firstLine(chk.out);
-            this.serverError = "byte comparison failed before load: " + why;
-            return;
+            throw heap Exception("byte comparison failed before load: " + why);
         }
-        return;
-    }
-
-    public void prepare(String variant) {
-        this.begin(variant);
-        this.n = 0;
-        this.requests = 0;
-        this.hwm = -1;
-        if (!this.serverKey.equals(this.key)) {
-            this.startServer();
-        }
-        if (!this.serverError.isEmpty()) {
-            throw heap Exception("" + this.serverError);
-        }
-        return;
-    }
-
-    public void teardown() {
-        this.stopServer();
         return;
     }
 
     // ---- one trial: one oha run -------------------------------------------
 
     public #String[] argvFor(String variant) {
-        int32 conns = ServiceBench.connsOf(variant);
+        int32 conns = Apps.connsOf(variant);
         int32 secs = this.trialSeconds;
-        if (this.warming()) {
+        if (this.isWarmup()) {
             secs = this.warmSeconds;
         }
         String oha #= ThroughputBench.ohaPath();
-        String url #= "http://127.0.0.1:" + this.serverPort + this.path;
+        String url #= "http://127.0.0.1:" + this.port + this.path;
         boolean post = this.method.equals("POST");
         int32 count = 10;
         if (post) {
@@ -258,20 +151,15 @@ public class ThroughputBench extends ServiceBench {
         return ThroughputBench.nanos(v.asFloat64());
     }
 
-    public void runVariant(String variant, int32 iterations) {
-        this.lastVariant = "" + variant;
-        int32 i = 0;
-        while (i < iterations) {
-            this.execute(variant);
-            this.tally();
-            this.calls = this.calls + 1;
-            i = i + 1;
-        }
+    /** One oha run against the running server (ServiceBenchmark samples its RSS meanwhile), then its tally. */
+    public void runPhase(String variant) {
+        this.runPhaseCommand(variant);
+        this.tally(variant);
         return;
     }
 
-    /** Parse the last oha run; throw on any error or unexpected status. */
-    public void tally() {
+    /** Parse the last oha run; throw on any error or unexpected status; report the trial's figures. */
+    public void tally(String variant) {
         JsonValue root #= Json.parse(this.lastStdout);
         if (root == null || root.kind() != 5) {
             throw heap Exception("oha printed no JSON summary");
@@ -308,60 +196,57 @@ public class ThroughputBench extends ServiceBench {
             }
         }
         if (errors > 0) {
-            throw heap Exception("oha reported " + errors + " errors at " + ServiceBench.connsOf(this.lastVariant)
+            throw heap Exception("oha reported " + errors + " errors at " + Apps.connsOf(variant)
                 + " connections");
         }
         if (total == 0 || good != total) {
             throw heap Exception("oha saw " + (total - good) + " of " + total + " answers other than " + this.expect);
         }
-        if (this.warming()) {
-            return;
-        }
-        if (this.n >= 64) {
+        if (this.isWarmup()) {
             return;
         }
         JsonValue lv = top.get("latencyPercentiles");
         JsonObject lat = lv.object();
-        this.rps[this.n] = (int64) (r * 10.0 + 0.5);
-        this.p50[this.n] = ThroughputBench.secondsAt(lat, "p50");
-        this.p95[this.n] = ThroughputBench.secondsAt(lat, "p95");
-        this.p99[this.n] = ThroughputBench.secondsAt(lat, "p99");
-        this.fastest[this.n] = ThroughputBench.secondsAt(summary, "fastest");
-        this.average[this.n] = ThroughputBench.secondsAt(summary, "average");
+        int64 fastest = ThroughputBench.secondsAt(summary, "fastest");
+        int64 p50 = ThroughputBench.secondsAt(lat, "p50");
+        int64 average = ThroughputBench.secondsAt(summary, "average");
+        int64 p95 = ThroughputBench.secondsAt(lat, "p95");
+        this.reportedThroughput(r, "req/s");
+        this.reportedStats(fastest, p50, average, p95);
+        if (this.n < 64) {
+            this.rps[this.n] = (int64) (r * 10.0 + 0.5);
+            this.p99[this.n] = ThroughputBench.secondsAt(lat, "p99");
+            this.n = this.n + 1;
+        }
         this.requests = this.requests + total;
-        this.n = this.n + 1;
+        this.composeNote(variant);
+        return;
+    }
+
+    /** The row's notes, rewritten after every trial so a row that fails later still says what ran. */
+    public void composeNote(String variant) {
+        int32 k = this.n;
+        String rl #= Stats.list(this.rps, k);
+        int64[] q = heap int64[64];
+        int32 i = 0;
+        while (i < k) {
+            q[i] = this.p99[i];
+            i = i + 1;
+        }
+        int64 q99 = Stats.median(q, k);
+        String ohaV #= Apps.tool("oha");
+        String k2 #= Apps.keyOf(variant);
+        String eng #= this.engineFor(k2);
+        this.setNote(variant, "oha " + ohaV + " " + this.method + " " + this.path + "; "
+            + Apps.connsOf(variant) + " connections; " + this.trialSeconds + " s per trial (warmup "
+            + this.warmSeconds + " s); requests=" + this.requests + "; errors=0; body=equal; status="
+            + this.expect + "; p99_ns=" + q99 + "; rps_tenths=" + rl
+            + "; latency is oha's (min=fastest, median=p50, mean=average)" + eng);
         return;
     }
 
     public boolean checkResult() {
-        if (this.lastExitCode != 0 || this.n == 0) {
-            return false;
-        }
-        String nm = this.name();
-        String v = this.lastVariant;
-        String lg = this.ledger;
-        int32 k = this.n;
-        String rl #= Stats.list(this.rps, k);
-        int64 mr = Stats.median(this.rps, k);
-        String tp #= Stats.tenths(mr);
-        Ledger.put(lg, nm, v, "throughput", tp);
-        Ledger.putInt(lg, nm, v, "min_ns", Stats.median(this.fastest, k));
-        Ledger.putInt(lg, nm, v, "median_ns", Stats.median(this.p50, k));
-        Ledger.putInt(lg, nm, v, "mean_ns", Stats.median(this.average, k));
-        Ledger.putInt(lg, nm, v, "p95_ns", Stats.median(this.p95, k));
-        Ledger.putInt(lg, nm, v, "trials", (int64) k);
-        Ledger.putInt(lg, nm, v, "warmup", (int64) this.warmCount());
-        String status #= "/proc/" + this.serverPid + "/status";
-        this.hwm = Memory.parseIntAfterFile(status, "VmHWM:");
-        Ledger.putInt(lg, nm, v, "peak_rss_kb", this.hwm);
-        String ohaV #= Apps.tool("oha");
-        int64 q99 = Stats.median(this.p99, k);
-        Ledger.put(lg, nm, v, "notes+", "oha " + ohaV + " " + this.method + " " + this.path + "; "
-            + ServiceBench.connsOf(v) + " connections; " + this.trialSeconds + " s per trial (warmup "
-            + this.warmSeconds + " s); requests=" + this.requests + "; errors=0; body=equal; status="
-            + this.expect + "; p99_ns=" + q99 + "; rps_tenths=" + rl + "; latency is oha's (min=fastest, median=p50, mean=average)"
-            + this.engineFor(this.key));
-        return true;
+        return this.lastExitCode == 0 && this.n > 0;
     }
 
     /** The template engine a templated-page row renders with, for its notes. */
@@ -382,9 +267,5 @@ public class ThroughputBench extends ServiceBench {
             return "; engine Razor";
         }
         return "; engine Jinja2 3.1.6";
-    }
-
-    public int64 measuredPeakRssKb() {
-        return this.hwm;
     }
 }

@@ -1,47 +1,57 @@
 package bench.primavera;
 
 import cajeta.collection.ArrayList;
+import cajeta.io.file.File;
+import cajeta.io.file.FileWriter;
+import cajeta.io.file.OpenMode;
 import cajeta.lang.String;
 import dev.cajeta.bench.BenchConfig;
-import dev.cajeta.bench.ExternalBenchmark;
-import dev.cajeta.bench.detect.Sys;
+import dev.cajeta.bench.Ports;
+import dev.cajeta.bench.ServiceBenchmark;
 
 /**
- * One page id measured on every platform the page names. Each harness
- * variant is `<key>` or `<key>@<connections>`, where the key names the app in
- * build/apps.tsv (primavera, spring-boot, quarkus-jvm, quarkus-native,
- * micronaut-jvm, micronaut-native, aspnetcore, fastapi). The ledger renames
- * it to the page's variant label and gives the row its language, platform
- * and versions (see {@link Ledger}).
+ * One page id measured on every platform the page names, on
+ * dev.cajeta.bench's ServiceBenchmark: per variant the harness starts the
+ * platform's server, waits for GET /health to answer 200 (polled every 1 ms),
+ * runs the measured phase, samples the server's resident set, and stops it
+ * by its PID (TERM, then KILL).
  *
- * The harness calls runVariant warmup times, then trials times, for each
- * variant after prepare(); `calls` counts them so a subclass knows which
- * phase it is in.
+ * Each variant key is `<key>` or `<key>@<connections>`, where the key names
+ * the app in build/apps.tsv (primavera, spring-boot, quarkus-jvm,
+ * quarkus-native, micronaut-jvm, micronaut-native, aspnetcore, fastapi). The
+ * row's identity comes from that app line through the harness's per-variant
+ * hooks (see Apps): language and its version, `library` the key and
+ * `library_version` the framework's version, `platform` the framework, the
+ * variant column the page's label (`64 connections`), and flags.
+ *
+ * Every server gets a free port of its own, cycling through 50 from the
+ * page's base (61100 to 61450, above the kernel's ephemeral range, where a
+ * load generator's client sockets cannot take them), and its PID goes into
+ * build/pids.txt so the smoke can prove none outlived the run.
  */
-public class ServiceBench extends ExternalBenchmark {
-    public String ledger;
+public class ServiceBench extends ServiceBenchmark {
     public String app;
     public String keyList;
     public String connList;
-    public String reason;
-    public String key;
-    public int32 calls;
     public int32 port;
     public int32 portBase;
     public boolean smoke;
+    public String rowNote;
+    public String noteVariant;
 
-    public ServiceBench(String page, String ledger, String app, String keys, String conns, int32 portBase) {
+    public ServiceBench(String page, String app, String keys, String conns, int32 portBase) {
+        super();
         this.describe(page, "primavera");
-        this.ledger = "" + ledger;
         this.app = "" + app;
         this.keyList = "" + keys;
         this.connList = "" + conns;
-        this.reason = "";
-        this.key = "";
-        this.calls = 0;
         this.portBase = portBase;
         this.port = portBase;
         this.smoke = BenchConfig.parseSmoke(System.env.get("CAJETA_BENCH_SMOKE"));
+        this.rowNote = "";
+        this.noteVariant = "";
+        this.readyTimeoutMillis((int64) 180000);
+        this.readyPollMillis(1);
         return;
     }
 
@@ -49,180 +59,96 @@ public class ServiceBench extends ExternalBenchmark {
         return "primavera spring-boot quarkus-jvm quarkus-native micronaut-jvm micronaut-native aspnetcore fastapi";
     }
 
-    // ---- variants ----------------------------------------------------------
+    // ---- variants and identity (dev.cajeta.bench hooks) ----------------------
 
     public #ArrayList<String> variants() {
-        ArrayList<String> v = heap ArrayList<String>();
-        String[] keys #= Apps.words(this.keyList, 0);
-        String[] conns #= Apps.words(this.connList, 0);
-        String only = System.env.get("CAJETA_BENCH_PLATFORMS");
-        int32 i = 0;
-        while (i < (int32) keys.count()) {
-            if (only != null && !ServiceBench.listed(only, keys[i])) {
-                i = i + 1;
-                continue;
-            }
-            if (conns.count() == 0) {
-                v.add("" + keys[i]);
-            } else {
-                int32 c = 0;
-                while (c < (int32) conns.count()) {
-                    v.add(keys[i] + "@" + conns[c]);
-                    c = c + 1;
-                }
-            }
-            i = i + 1;
-        }
-        return v;
+        return Apps.variants(this.keyList, this.connList);
     }
 
-    /** True when `key` is one of the space- or comma-separated words of `list`. */
-    public static boolean listed(String list, String key) {
-        String norm #= list.replace(",", " ");
-        String[] ws #= Apps.words(norm, 0);
-        int32 i = 0;
-        while (i < (int32) ws.count()) {
-            if (ws[i].equals(key)) {
-                return true;
-            }
-            i = i + 1;
-        }
-        return false;
+    public String languageFor(String variant) {
+        return Apps.fieldOf(variant, this.app, Apps.LANGUAGE());
     }
 
-    public static #String keyOf(String variant) {
-        int64 at = variant.indexOf("@");
-        if (at < 0) {
-            return "" + variant;
-        }
-        return variant.substring(0, (int32) at);
+    public String languageVersionFor(String variant) {
+        String lang #= Apps.fieldOf(variant, this.app, Apps.LANGUAGE());
+        return Apps.languageVersion(lang);
     }
 
-    public static int32 connsOf(String variant) {
-        int64 at = variant.indexOf("@");
-        if (at < 0) {
-            return 0;
-        }
-        String c #= variant.substring((int32) at + 1, variant.byteLength());
-        return (int32) Apps.number(" " + c, " ");
+    public String platformFor(String variant) {
+        return Apps.fieldOf(variant, this.app, Apps.PLATFORM());
     }
 
-    /** The page's variant label: `64 connections`, or "" for a single-variant page. */
-    public #String label(String variant) {
-        int32 c = ServiceBench.connsOf(variant);
-        if (c <= 0) {
-            return "";
-        }
-        return "" + c + " connections";
+    public String libraryFor(String variant) {
+        return Apps.keyOf(variant);
     }
 
-    // ---- identity and skips ------------------------------------------------
-
-    /** The row's identity onto the ledger, from the app's line. */
-    public void identify(String variant) {
-        String k #= ServiceBench.keyOf(variant);
-        String ln #= Apps.line(k, this.app);
-        String lang #= Apps.col(ln, Apps.LANGUAGE());
-        String nm = this.name();
-        Ledger.put(this.ledger, nm, variant, "language", lang);
-        String lv #= Apps.languageVersion(lang);
-        Ledger.put(this.ledger, nm, variant, "language_version", lv);
-        Ledger.put(this.ledger, nm, variant, "library", k);
-        String ver #= Apps.col(ln, Apps.VERSION());
-        Ledger.put(this.ledger, nm, variant, "library_version", ver);
-        String pl #= Apps.col(ln, Apps.PLATFORM());
-        Ledger.put(this.ledger, nm, variant, "platform", pl);
-        String lb #= this.label(variant);
-        Ledger.put(this.ledger, nm, variant, "variant", lb);
-        if (!lang.equals("cajeta")) {
-            Ledger.put(this.ledger, nm, variant, "flags", "as shipped");
-        } else {
-            String fl #= Sys.readText("apps/" + this.app + "/FLAGS");
-            String ft #= fl.trim();
-            Ledger.put(this.ledger, nm, variant, "flags", ft);
-        }
-        return;
+    public String libraryVersionFor(String variant) {
+        return Apps.fieldOf(variant, this.app, Apps.VERSION());
     }
 
-    /** Why `key` cannot run here, or "" when it can. */
-    public #String whyNot(String key) {
-        String ln #= Apps.line(key, this.app);
-        if (ln.isEmpty()) {
-            return "no " + this.app + " app for " + key + " in build/apps.tsv (run scripts/build-all.sh)";
-        }
-        String st #= Apps.status(key, this.app);
-        if (st.equals("ok")) {
-            return "";
-        }
-        if (st.isEmpty()) {
-            return "no build status for " + key + "-" + this.app + " (run scripts/build-all.sh)";
-        }
-        if (st.startsWith("skipped: ")) {
-            return st.substring(9, st.byteLength());
-        }
-        return st;
+    public String variantLabel(String variant) {
+        return Apps.labelOf(variant);
+    }
+
+    public String flagsFor(String variant) {
+        return Apps.flagsOf(variant, this.app);
     }
 
     public boolean supportsVariant(String variant) {
-        this.identify(variant);
-        String k #= ServiceBench.keyOf(variant);
-        String why #= this.whyNot(k);
-        this.reason = "" + why;
+        String why #= Apps.whyNot(variant, this.app);
         return why.isEmpty();
     }
 
-    public String skipReason() {
-        return this.reason;
+    public String skipReasonFor(String variant) {
+        return Apps.whyNot(variant, this.app);
+    }
+
+    /** The row's notes: what the variant's measured phase wrote, never another variant's. */
+    public String noteFor(String variant) {
+        if (variant.equals(this.noteVariant)) {
+            return this.rowNote;
+        }
+        return "";
+    }
+
+    public void setNote(String variant, String note) {
+        this.noteVariant = "" + variant;
+        this.rowNote = "" + note;
     }
 
     public void setup() {
-        String t #= Apps.tool("cajeta");
-        if (t.isEmpty()) {
-            throw heap Exception("build/toolchains.tsv is missing: run scripts/build-all.sh first");
-        }
+        Apps.setupFor(this);
         return;
     }
 
-    // ---- per-variant phase -------------------------------------------------
+    // ---- the service ---------------------------------------------------------
 
-    /** Start of a variant: its key, and the call count back to 0. Subclasses call it from prepare. */
-    public void begin(String variant) {
-        this.key #= ServiceBench.keyOf(variant);
-        this.calls = 0;
+    /** The server command for `variant` on the port startService chose. */
+    public #String[] serviceArgvFor(String variant) {
+        String run #= Apps.fieldOf(variant, this.app, Apps.RUN());
+        return Apps.words(run, this.port);
+    }
+
+    /** Start the variant's server on a fresh free port, in its app directory; record its PID. */
+    public void startService(String variant) {
+        int32 p = this.nextPort();
+        this.readyOnUrl(p, "/health", 200);
+        String d #= Apps.fieldOf(variant, this.app, Apps.DIR());
+        this.serviceDirectory(d);
+        String log #= this.absLog(variant);
+        this.serviceLog(log);
+        super.startService(variant);
+        String pids #= this.absPids();
+        FileWriter pf #= File.openWrite(pids, OpenMode.APPEND);
+        String k #= Apps.keyOf(variant);
+        pf.writeString("" + this.lastServicePid + " " + k + "\n");
+        pf.close();
         return;
-    }
-
-    public void prepare(String variant) {
-        this.begin(variant);
-        return;
-    }
-
-    /** The app's directory, relative to bench/. */
-    public #String dir() {
-        return Apps.field(this.key, this.app, Apps.DIR());
-    }
-
-    /** True in the trials (after the warmups), for the call about to run. */
-    public int32 trialIndex() {
-        return this.calls - this.warmCount();
-    }
-
-    /** The warmup count the harness uses (1 in smoke mode). */
-    public int32 warmCount() {
-        if (this.smoke) {
-            return 1;
-        }
-        return this.warm;
-    }
-
-    public boolean warming() {
-        return this.calls < this.warmCount();
     }
 
     /**
-     * A free port not used by the previous launch, cycling through 50 from
-     * portBase. The bases sit above the kernel's ephemeral range (32768 to
-     * 60999 here), where a load generator's client sockets cannot take them.
+     * The next port of the 50 from portBase that a listener can bind now
+     * (Ports.isFree), skipping the one the previous server had.
      */
     public int32 nextPort() {
         int32 tries = 0;
@@ -231,30 +157,19 @@ public class ServiceBench extends ExternalBenchmark {
             if (this.port >= this.portBase + 50) {
                 this.port = this.portBase;
             }
-            String[] a = heap String[5];
-            a[0] = "python3";
-            a[1] = "tools/svc.py";
-            a[2] = "free";
-            a[3] = "--port";
-            a[4] = "" + this.port;
-            Run r #= Run.of(#a);
-            if (r.code == 0) {
+            if (Ports.isFree(this.port)) {
                 return this.port;
             }
             tries = tries + 1;
         }
-        return this.port;
+        throw heap Exception("no free port in " + this.portBase + ".." + (this.portBase + 49));
     }
 
-    /** The log a launch of the current key writes (bench/build/logs/<page>-<key>.log). */
-    public #String logPath() {
-        return "build/logs/" + this.name() + "-" + this.key + ".log";
-    }
-
-    /** `log` as an absolute path: launches run in the app's directory. */
-    public #String absLog() {
+    /** The log a server of this variant writes (bench/build/logs/<page>-<key>.log), absolute: servers run in their app directory. */
+    public #String absLog(String variant) {
+        String k #= Apps.keyOf(variant);
+        String rel #= "build/logs/" + this.name() + "-" + k + ".log";
         String cwd = System.env.get("PWD");
-        String rel #= this.logPath();
         if (cwd == null) {
             return rel;
         }

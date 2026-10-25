@@ -1,6 +1,8 @@
 package bench.primavera;
 
+import cajeta.collection.ArrayList;
 import cajeta.lang.String;
+import dev.cajeta.bench.ExternalBenchmark;
 
 /**
  * `primavera/di-graph-100-startup` (Di.md): the 100-component graph of
@@ -10,27 +12,89 @@ import cajeta.lang.String;
  * the container, resolve the ten level-0 components, make the first injected
  * call (which reaches all 100), print, exit. peak_rss_kb is the library's,
  * one more run under /usr/bin/time. The check is the component count:
- * stdout must be `components=100 checksum=875665`.
+ * stdout must be `components=100 checksum=875665`. The row's identity comes
+ * from the app line of the variant's key (see Apps), as on the web rows.
  */
-public class DiBench extends ServiceBench {
+public class DiBench extends ExternalBenchmark {
+    public String keyList;
+    public String rowNote;
+    public String noteVariant;
 
-    public DiBench(String ledger, String keys) {
-        super("di-graph-100-startup", ledger, "di", keys, "", 0);
+    public DiBench(String keys) {
+        super();
+        this.describe("di-graph-100-startup", "primavera");
+        this.keyList = "" + keys;
+        this.rowNote = "";
+        this.noteVariant = "";
         this.iterations(1, 20);
         this.timeoutMillis((int64) 120000);
         return;
     }
 
+    public #ArrayList<String> variants() {
+        return Apps.variants(this.keyList, "");
+    }
+
+    public String languageFor(String variant) {
+        return Apps.fieldOf(variant, "di", Apps.LANGUAGE());
+    }
+
+    public String languageVersionFor(String variant) {
+        String lang #= Apps.fieldOf(variant, "di", Apps.LANGUAGE());
+        return Apps.languageVersion(lang);
+    }
+
+    public String platformFor(String variant) {
+        return Apps.fieldOf(variant, "di", Apps.PLATFORM());
+    }
+
+    public String libraryFor(String variant) {
+        return Apps.keyOf(variant);
+    }
+
+    public String libraryVersionFor(String variant) {
+        return Apps.fieldOf(variant, "di", Apps.VERSION());
+    }
+
+    public String variantLabel(String variant) {
+        return Apps.labelOf(variant);
+    }
+
+    public String flagsFor(String variant) {
+        return Apps.flagsOf(variant, "di");
+    }
+
+    public boolean supportsVariant(String variant) {
+        String why #= Apps.whyNot(variant, "di");
+        return why.isEmpty();
+    }
+
+    public String skipReasonFor(String variant) {
+        return Apps.whyNot(variant, "di");
+    }
+
+    public String noteFor(String variant) {
+        if (variant.equals(this.noteVariant)) {
+            return this.rowNote;
+        }
+        return "";
+    }
+
+    public void setup() {
+        Apps.setupFor(this);
+        return;
+    }
+
     public void prepare(String variant) {
-        this.begin(variant);
-        String d #= this.dir();
-        this.cmdCwd = "" + d;
+        this.noteVariant = "" + variant;
+        this.rowNote = "";
+        String d #= Apps.fieldOf(variant, "di", Apps.DIR());
+        this.workingDirectory(d);
         return;
     }
 
     public #String[] argvFor(String variant) {
-        String k #= ServiceBench.keyOf(variant);
-        String run #= Apps.field(k, "di", Apps.RUN());
+        String run #= Apps.fieldOf(variant, "di", Apps.RUN());
         return Apps.words(run, 0);
     }
 
@@ -39,14 +103,12 @@ public class DiBench extends ServiceBench {
             return false;
         }
         boolean ok = this.lastStdout.contains("components=100 checksum=875665");
-        String nm = this.name();
-        String v = this.lastVariant;
         if (ok) {
-            Ledger.put(this.ledger, nm, v, "notes+", "exec to exit of the DI app, which exits right after the "
-                + "first injected call printed components=100 checksum=875665");
+            this.rowNote = "exec to exit of the DI app, which exits right after the "
+                + "first injected call printed components=100 checksum=875665";
         } else {
             String got #= this.lastStdout.trim();
-            Ledger.put(this.ledger, nm, v, "notes+", "component count wrong: " + got);
+            this.rowNote = "component count wrong: " + got;
         }
         return ok;
     }

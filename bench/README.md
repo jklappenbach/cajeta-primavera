@@ -39,11 +39,13 @@ per trial, 3 launches, one build per platform; its rows are tagged `smoke`
 and land under `build/results/`, never `results/`. `--machine` sets the
 `machine` column (default the hostname).
 
-Measured smoke durations on Phoenix, 2026-10-25 (`test/bench_smoke.sh`, 14.4
-min in all): build-all 43 s with everything already built, register-user-json
-139 s, templated-page 61 s, cold-start 52 s, idle-rss 62 s, loaded-rss 87 s,
-build-time 401 s (a clean Cajeta build of the server is about 6 min of it),
-di-graph-100-startup 21 s. A full run is roughly 5 × 30 s of load per
+Measured smoke durations on Phoenix, 2026-10-25, on dev.cajeta.bench 0.1.5
+(`test/bench_smoke.sh`, 22.0 min in all, at load average 8 to 18 from other
+sessions): build-all 583 s (it rebuilt the server, 293 s, the DI app, 91 s,
+and the harness, 157 s; 43 s when everything is already built),
+register-user-json 151 s, templated-page 62 s, cold-start 27 s, idle-rss
+77 s, loaded-rss 108 s, build-time 279 s, di-graph-100-startup 28 s.
+A full run is roughly 5 × 30 s of load per
 throughput row, 20 launches per cold-start row, 3 × 60 s per loaded-rss row
 and 3 clean builds per build-time row: about 1.5 hours.
 
@@ -75,8 +77,6 @@ number.
 | `competitors/<framework>/apps.tsv`, `apps/apps.tsv` | per app: language, platform, pinned version, clean, build and run commands |
 | `contract/` | the contract, its probes and golden bytes, `check.py` |
 | `di/graph.json`, `di/generate.py` | the one DI graph and the generator that writes it for all six frameworks |
-| `tools/svc.py` | launch to first 200, RSS sampling, build timing |
-| `tools/amend.py` | writes the ledger onto the harness's rows (below) |
 | `scripts/build-all.sh` | builds every app, capped (`BUILD_CAP`, 900 s), and writes `build/status/` |
 
 Pinned versions: Spring Boot 4.1.2 (MVC, Thymeleaf), Quarkus 3.40.1.1 (REST
@@ -91,29 +91,46 @@ Quarkus and Micronaut native-image rows are `skipped` until GraalVM's
 
 ## How a row is made
 
-Each id is one `dev.cajeta.bench` Benchmark, an `ExternalBenchmark`, whose
-variants are the platforms (`spring-boot`, `quarkus-jvm@512`, ...). Each
-trial is one external command: an `oha` run, a `tools/svc.py launch`, a
-`tools/svc.py build`, or the DI app itself. Three things the library cannot
-yet put on a row are written beside it in `ledger.tsv` and applied by
-`tools/amend.py` once `BenchMain.run` has written results.csv:
+Each id is one `dev.cajeta.bench` 0.1.5 Benchmark whose variants are the
+platforms (`spring-boot`, `quarkus-jvm@512`, ...), and every column of every
+row is the harness's:
 
-- **identity.** The harness writes every non-interleaved row as
-  `language=cajeta`. The ledger sets language, language_version, `library`
-  (the platform key), library_version, `platform` (the framework and its
-  version) and the page's variant label (`64 connections`).
-- **throughput.** req/s parsed from oha's JSON goes onto the throughput
-  columns (median trial, unit `req/s`); oha's latency onto the time columns
-  (min = fastest, median = p50, mean = average, p95 = p95).
-- **figures measured outside the timed command.** For a launch the helper's
-  exec-to-first-200 replaces the command's wall time, which also covers
-  Python's start and the server's teardown; for a build, the build without
-  its clean. RSS of a running server is sampled from `/proc/<pid>/status`
-  (VmRSS, VmHWM), since the library's `/usr/bin/time` rusage needs the
-  process to exit.
+- **identity.** The per-variant hooks answer from the key's line in
+  `build/apps.tsv`: `language` and `language_version`, `library` the
+  platform key and `library_version` its version, `platform` the framework
+  and its version, `flags` (`apps/<app>/FLAGS` for primavera, `as shipped`
+  for a competitor), and the variant column the page's label
+  (`64 connections`).
+- **the services.** The web ids are `ServiceBenchmark`s: the harness starts
+  the server on a free port in the page's range, waits for `GET /health` to
+  answer 200 (polled every 1 ms), runs the measured phase, samples the
+  server's resident set from `/proc` while it runs, and stops it by its PID
+  (TERM, then KILL after 5 s). The throughput ids keep one server per
+  variant and byte-compare it with the contract before any load; the
+  start-up ids launch a fresh one in every warmup and trial.
+- **throughput.** Each oha trial reports req/s (`reportedThroughput`, unit
+  `req/s`, the row's figure the median trial) and oha's latency
+  (`reportedStats`: min = fastest, median = p50, mean = average, p95 = p95,
+  each the median over trials). The warmup's oha run is the short one
+  (`isWarmup()`).
+- **figures measured inside the work.** A launch row's time is exec to the
+  first 200 (`reported`); a build row's is the build without its clean.
+  peak_rss_kb is the median over launches of VmHWM at the first 200
+  (cold-start), VmRSS 2 s later (idle-rss) or VmRSS after the load
+  (loaded-rss), summed over the server and its descendants; on the
+  throughput rows it is the server's VmHWM over the trials.
+- **env.csv** gains every toolchain version in `build/toolchains.tsv` as
+  `toolchain_<name>` (`envExtra`).
 
 The DI rows use the library's numbers as they are: wall time of the whole
 process, and peak RSS from one more run under GNU time.
+
+What stays local: the port range (each page cycles through 50 ports from
+its own base, checked with `Ports.isFree`; `Ports.free` hands out ports from
+61000 up and cannot be held to a range), and the smoke build: the harness's
+smoke is one warmup and three trials, so in smoke mode the build-time warmup
+builds nothing and trials 2 and 3 report the first build's time (the row's
+notes say so).
 
 ## Known limits
 
