@@ -1,0 +1,159 @@
+package bench.primavera;
+
+import cajeta.lang.String;
+
+/**
+ * `primavera/build-time` (Build.md): a clean build of the register-user
+ * service to a runnable artifact. Each trial is one `tools/svc.py build`
+ * under ExternalBenchmark: the app's clean command (untimed), then its build
+ * command, timed by the helper; the row's figure is that build alone. Maven
+ * builds run offline against a warm ~/.m2 and dotnet against a restored NuGet
+ * cache, as Cajeta builds against the local Olla store: dependency downloads
+ * are not timed. The check is the page's: the artifact runs, which one
+ * launch to the first 200 from GET /health proves after the trials.
+ *
+ * No warmup build. In smoke mode one build per platform is measured (a clean
+ * Cajeta release build takes minutes); the trials column says how many.
+ */
+public class BuildBench extends ServiceBench {
+    public int64[] took;
+    public int32 n;
+    public String runsNote;
+
+    public BuildBench(String ledger, String keys, int32 portBase) {
+        super("build-time", ledger, "web", keys, "", portBase);
+        this.took = heap int64[16];
+        this.n = 0;
+        this.runsNote = "";
+        this.iterations(0, 3);
+        this.timeoutMillis((int64) 3600000);
+        return;
+    }
+
+    public boolean supportsVariant(String variant) {
+        this.identify(variant);
+        String k #= ServiceBench.keyOf(variant);
+        String b #= Apps.field(k, "web", Apps.BUILD());
+        if (b.equals("-")) {
+            this.reason = "no build step";
+            return false;
+        }
+        String why #= this.whyNot(k);
+        this.reason = "" + why;
+        return why.isEmpty();
+    }
+
+    public void prepare(String variant) {
+        this.begin(variant);
+        this.n = 0;
+        this.runsNote = "";
+        return;
+    }
+
+    public #String[] argvFor(String variant) {
+        String[] a = heap String[13];
+        a[0] = "python3";
+        a[1] = "tools/svc.py";
+        a[2] = "build";
+        a[3] = "--dir";
+        String d #= this.dir();
+        a[4] = "" + d;
+        a[5] = "--clean";
+        String c #= Apps.field(this.key, "web", Apps.CLEAN());
+        a[6] = "" + c;
+        a[7] = "--build";
+        String b #= Apps.field(this.key, "web", Apps.BUILD());
+        a[8] = "" + b;
+        a[9] = "--log";
+        String log #= this.absLog();
+        a[10] = "" + log;
+        a[11] = "--timeout";
+        a[12] = "3000";
+        return a;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.lastVariant = "" + variant;
+        int32 i = 0;
+        while (i < iterations) {
+            boolean measure = !this.warming();
+            if (this.smoke && this.trialIndex() >= 1) {
+                measure = false;
+            }
+            if (measure) {
+                this.execute(variant);
+                if (this.n < 16) {
+                    this.took[this.n] = Apps.number(this.lastStdout, "build_ns=");
+                    this.n = this.n + 1;
+                }
+            }
+            this.calls = this.calls + 1;
+            i = i + 1;
+        }
+        return;
+    }
+
+    /** One launch of the built artifact to the first 200: the page's check. */
+    public boolean artifactRuns() {
+        int32 p = this.nextPort();
+        String run #= Apps.field(this.key, "web", Apps.RUN());
+        String[] words #= Apps.words(run, p);
+        int32 w = (int32) words.count();
+        String[] a = heap String[16 + w];
+        a[0] = "python3";
+        a[1] = "tools/svc.py";
+        a[2] = "launch";
+        a[3] = "--dir";
+        String d #= this.dir();
+        a[4] = "" + d;
+        a[5] = "--port";
+        a[6] = "" + p;
+        a[7] = "--log";
+        String log #= this.absLog();
+        a[8] = "" + log;
+        a[9] = "--pids";
+        String pids #= this.absPids();
+        a[10] = "" + pids;
+        a[11] = "--timeout";
+        a[12] = "180";
+        a[13] = "--settle";
+        a[14] = "0";
+        a[15] = "--";
+        int32 i = 0;
+        while (i < w) {
+            a[16 + i] = "" + words[i];
+            i = i + 1;
+        }
+        Run r #= Run.of(#a);
+        if (r.code != 0) {
+            String why #= r.why();
+            this.runsNote = "artifact did not run: " + why;
+            return false;
+        }
+        int64 ns = Apps.number(r.out, "first200_ns=");
+        this.runsNote = "artifact runs (first 200 after " + (ns / (int64) 1000000) + " ms)";
+        return true;
+    }
+
+    public boolean checkResult() {
+        if (this.lastExitCode != 0 || this.n == 0) {
+            return false;
+        }
+        boolean runs = this.artifactRuns();
+        String nm = this.name();
+        String v = this.lastVariant;
+        String lg = this.ledger;
+        Stats.times(lg, nm, v, this.took, this.n);
+        Ledger.putInt(lg, nm, v, "trials", (int64) this.n);
+        Ledger.putInt(lg, nm, v, "warmup", (int64) 0);
+        Ledger.putInt(lg, nm, v, "peak_rss_kb", (int64) -1);
+        String c #= Apps.field(this.key, "web", Apps.CLEAN());
+        String b #= Apps.field(this.key, "web", Apps.BUILD());
+        Ledger.put(lg, nm, v, "notes+", "timed: `" + b + "` after `" + c + "` (untimed); " + this.runsNote);
+        return runs;
+    }
+
+    public int64 measuredPeakRssKb() {
+        return (int64) -1;
+    }
+}

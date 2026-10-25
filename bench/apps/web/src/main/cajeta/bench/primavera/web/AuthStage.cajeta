@@ -1,0 +1,68 @@
+package bench.primavera.web;
+
+import cajeta.aot.Components;
+import cajeta.lang.String;
+import dev.cajeta.http.HttpRequest;
+import dev.cajeta.http.HttpResponse;
+import dev.cajeta.primavera.pipeline.Buffer;
+import dev.cajeta.primavera.pipeline.Kind;
+import dev.cajeta.primavera.pipeline.RequestContext;
+import dev.cajeta.primavera.pipeline.Stage;
+
+/**
+ * The authentication filter (contract §POST /users, step 1), a pipeline
+ * stage ahead of routing, RAW to RAW. On `/users` it admits only
+ * `Authorization: Bearer bench-7f3c9a1e` and provides the request's
+ * {@link Principal}; anything else is answered here, 401 with
+ * `{"error":"unauthorized"}`, the way primavera's own guard refuses.
+ */
+public final class AuthStage implements Stage {
+
+    public AuthStage() {
+        return;
+    }
+
+    public #String name() { String s = "bench-auth"; return #s; }
+    public int32 consumes() { return Kind.RAW(); }
+    public int32 produces() { return Kind.RAW(); }
+
+    public Buffer inbound(Buffer buffer, RequestContext ctx) {
+        HttpRequest q = ctx.request();
+        if (!AuthStage.guarded(q)) {
+            return #= buffer;
+        }
+        if (!q.headerIs("Authorization", "Bearer bench-7f3c9a1e")) {
+            HttpResponse r = ctx.response();
+            r.reset();
+            r.status(401);
+            r.setHeader("Content-Type", "application/json");
+            r.setHeader("WWW-Authenticate", "Bearer");
+            r.write("{\"error\":\"unauthorized\"}");
+            ctx.respond(401);
+            return #= buffer;
+        }
+        Principal p = heap Principal("bench-client");
+        Components.provide(#p);
+        return #= buffer;
+    }
+
+    public Buffer outbound(Buffer buffer, RequestContext ctx) { return #= buffer; }
+
+    /** True for the path `/users`, compared in place. */
+    static boolean guarded(HttpRequest q) {
+        Slice<int8> p = q.path();
+        String want = "/users";
+        int32 n = want.byteLength();
+        if ((int32) p.count() != n) {
+            return false;
+        }
+        int32 i = 0;
+        while (i < n) {
+            if (p[i] != want.byteAt(i)) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+}

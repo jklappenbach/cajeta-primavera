@@ -1,0 +1,54 @@
+package bench.primavera;
+
+import cajeta.lang.String;
+import dev.cajeta.bench.Harness;
+
+/** The harness's distribution (sorted in place: min, median, mean, p95) over external samples. */
+public final class Stats {
+
+    public static int64 median(int64[] s, int32 n) {
+        if (n <= 0) {
+            return (int64) -1;
+        }
+        Harness.sortInPlace(s, n);
+        return s[n / 2];
+    }
+
+    /** min_ns, median_ns, mean_ns and p95_ns of samples[0..n) onto the ledger row. */
+    public static void times(String ledger, String bench, String variant, int64[] s, int32 n) {
+        if (n <= 0) {
+            return;
+        }
+        Harness.sortInPlace(s, n);
+        int64 sum = 0;
+        int32 i = 0;
+        while (i < n) {
+            sum = sum + s[i];
+            i = i + 1;
+        }
+        Ledger.putInt(ledger, bench, variant, "min_ns", s[0]);
+        Ledger.putInt(ledger, bench, variant, "median_ns", s[n / 2]);
+        Ledger.putInt(ledger, bench, variant, "mean_ns", sum / (int64) n);
+        Ledger.putInt(ledger, bench, variant, "p95_ns", s[Harness.p95Index(n)]);
+        return;
+    }
+
+    /** `v` with one decimal, from tenths. */
+    public static #String tenths(int64 t) {
+        return "" + (t / 10) + "." + (t % 10);
+    }
+
+    /** Samples as `a/b/c` for the notes. */
+    public static #String list(int64[] s, int32 n) {
+        String out = "";
+        int32 i = 0;
+        while (i < n) {
+            if (i > 0) {
+                out = out + "/";
+            }
+            out = out + s[i];
+            i = i + 1;
+        }
+        return #out;
+    }
+}

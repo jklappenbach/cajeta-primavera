@@ -1,0 +1,33 @@
+package bench.primavera.web;
+
+import cajeta.lang.String;
+
+/** Mints `u-` and the 32-bit FNV-1a of the username's UTF-8 bytes, eight lowercase hex digits. */
+@Component
+public class IdMinter {
+
+    public IdMinter() {
+        return;
+    }
+
+    public #String mint(String username) {
+        int64 h = (int64) 2166136261;
+        int32 i = 0;
+        int32 n = username.byteLength();
+        while (i < n) {
+            int64 b = ((int64) username.byteAt(i) + (int64) 256) % (int64) 256;
+            h = h ^ b;
+            h = (h * (int64) 16777619) % (int64) 4294967296;
+            i = i + 1;
+        }
+        String hex = "0123456789abcdef";
+        String out = "u-";
+        int32 shift = 28;
+        while (shift >= 0) {
+            int32 d = (int32) ((h >> shift) % (int64) 16);
+            out = out + hex.substring(d, d + 1);
+            shift = shift - 4;
+        }
+        return #out;
+    }
+}

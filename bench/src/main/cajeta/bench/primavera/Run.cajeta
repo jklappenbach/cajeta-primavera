@@ -1,0 +1,48 @@
+package bench.primavera;
+
+import cajeta.lang.String;
+import cajeta.process.Command;
+import cajeta.process.ProcessResult;
+import dev.cajeta.bench.detect.Sys;
+
+/** A helper command run to completion (svc.py wait, check.py): its exit code and output. */
+public final class Run {
+    public int32 code;
+    public String out;
+    public String err;
+
+    public Run() {
+        this.code = -1;
+        this.out = "";
+        this.err = "";
+        return;
+    }
+
+    public static #Run of(#String[] argv) {
+        Run r = heap Run();
+        Command c = heap Command(#argv);
+        c.captureStdout();
+        c.captureStderr();
+        ProcessResult p #= c.run();
+        if (!p.launched()) {
+            r.code = 127;
+            r.err = "could not start";
+            return r;
+        }
+        r.code = p.exitCode();
+        String o #= Sys.copyText(p.stdout());
+        r.out #= o;
+        String e #= Sys.copyText(p.stderr());
+        r.err #= e;
+        return r;
+    }
+
+    /** The first line of stderr, else of stdout. */
+    public #String why() {
+        String e #= Sys.firstLine(this.err);
+        if (!e.isEmpty()) {
+            return e;
+        }
+        return Sys.firstLine(this.out);
+    }
+}

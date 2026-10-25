@@ -1,0 +1,24 @@
+{
+  "generator": {
+    "tool": "cajeta",
+    "version": "0.46.3"
+  },
+  "lockfile-version": 1,
+  "manifest-checksum": "sha256:f6c60118688bb136391d460307bffa0be382f30d409a8f0ac35bfb256adbb322",
+  "melts": [],
+  "overrides": [],
+  "packages": [],
+  "plugins": [],
+  "properties": {
+    "cajeta.version": "0.46.3",
+    "details.group": "dev.cajeta.bench.primavera",
+    "details.library": "di",
+    "details.name": "dev.cajeta.bench.primavera.di",
+    "details.version": "0.1.0",
+    "flavor": "",
+    "profile": "",
+    "target": "",
+    "workspace.root": ""
+  },
+  "resolved-at": "2026-10-25T18:30:29Z"
+}

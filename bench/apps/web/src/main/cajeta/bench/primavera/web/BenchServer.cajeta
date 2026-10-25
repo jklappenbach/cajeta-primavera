@@ -1,0 +1,53 @@
+package bench.primavera.web;
+
+import cajeta.lang.String;
+import dev.cajeta.primavera.web.Endpoints;
+import dev.cajeta.primavera.web.JsonBody;
+import dev.cajeta.primavera.web.RequestView;
+import dev.cajeta.primavera.web.Response;
+import dev.cajeta.primavera.web.WebServer;
+import dev.cajeta.primavera.web.WebServerBuilder;
+
+/**
+ * The primavera bench server (bench/contract/README.md): `GET /health`,
+ * `POST /users` behind {@link AuthStage}, `GET /fortunes`. Serves on the
+ * address in args[0] (`127.0.0.1:<port>`) until killed. Content coding is
+ * off, as it is by default in every competitor.
+ */
+public final class BenchServer {
+
+    public static void health(Response r) {
+        r.json(200).field("status", "up").end();
+        return;
+    }
+
+    public static void register(JsonBody b, Response r) {
+        UserService users = UserService.__cajeta_inject();
+        Principal who = Principal.__cajeta_inject();
+        users.register(who.name, b, r);
+        return;
+    }
+
+    public static void fortunes(Response r) {
+        FortunePage page = FortunePage.__cajeta_inject();
+        page.render(r);
+        return;
+    }
+
+    public static int32 main(String[] args) {
+        String addr = args.count() > 0 ? args[0] : "127.0.0.1:8080";
+        Endpoints api = heap Endpoints();
+        api.route("GET", "/health", (RequestView q, Response r) -> BenchServer.health(r));
+        api.json("POST", "/users", (RequestView q, JsonBody b, Response r) -> BenchServer.register(b, r));
+        api.route("GET", "/fortunes", (RequestView q, Response r) -> BenchServer.fortunes(r));
+        WebServerBuilder b #= WebServer.builder();
+        b.bind(addr);
+        b.compressAbove(2147483647);
+        b.endpoints(#api);
+        b.stage(heap AuthStage());
+        WebServer web #= b.build();
+        System.stdout.println("primavera bench server listening on " + addr);
+        web.serve();
+        return 0;
+    }
+}

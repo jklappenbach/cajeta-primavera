@@ -1,0 +1,19 @@
+package bench.primavera.web;
+
+import cajeta.lang.String;
+
+/**
+ * Who the request is from, provided by {@link AuthStage} into the request
+ * scope (contract §POST /users, step 2). It has no no-argument constructor,
+ * so the graph never builds one: it exists only once the stage admits the
+ * request, and the scope frees it when the request ends.
+ */
+@Component(scope = "Request")
+public class Principal {
+    public String name;
+
+    public Principal(String name) {
+        this.name #= name;
+        return;
+    }
+}

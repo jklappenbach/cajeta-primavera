@@ -1,0 +1,108 @@
+package bench.primavera;
+
+import cajeta.io.file.File;
+import cajeta.io.file.FileWriter;
+import cajeta.io.file.OpenMode;
+import cajeta.lang.String;
+import cajeta.process.Command;
+import cajeta.process.ProcessResult;
+
+/**
+ * What dev.cajeta.bench's rows cannot carry for an external service, kept
+ * beside results.csv as ledger.tsv (`benchmark  variant  column  value`) and
+ * written onto the rows by tools/amend.py once BenchMain.run has written them:
+ *
+ *   * the row's identity: language, language_version, library (the platform
+ *     key), library_version, platform, and the page's variant label (the
+ *     harness only writes `cajeta` rows, and its variants must be unique);
+ *   * the figure measured outside the harness's timed region: exec to first
+ *     200, a build without its clean, oha's latency, the server's resident
+ *     set, req/s on the throughput columns;
+ *   * notes to append (oha version, connections, errors=0, body=equal).
+ *
+ * Every row keeps the harness's run_id, machine, os, status and smoke tag.
+ */
+public final class Ledger {
+
+    /** `<dir>/ledger.tsv` for `--out <dir>/results.csv`, else `ledger.tsv` beside it. */
+    public static #String pathFor(String[] args) {
+        String out = "results.csv";
+        int32 i = 0;
+        while (i + 1 < (int32) args.count()) {
+            if (args[i].equals("--out")) {
+                out = "" + args[i + 1];
+            }
+            i = i + 1;
+        }
+        if (out.endsWith("results.csv")) {
+            int32 n = out.byteLength();
+            return out.substring(0, n - 11) + "ledger.tsv";
+        }
+        return out + ".ledger.tsv";
+    }
+
+    public static #String outFor(String[] args) {
+        int32 i = 0;
+        while (i + 1 < (int32) args.count()) {
+            if (args[i].equals("--out")) {
+                return "" + args[i + 1];
+            }
+            i = i + 1;
+        }
+        return "results.csv";
+    }
+
+    public static boolean running(String[] args) {
+        int32 i = 0;
+        while (i < (int32) args.count()) {
+            if (args[i].equals("--run")) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    public static void reset(String path) {
+        FileWriter w #= File.openWrite(path, OpenMode.WRITE);
+        w.close();
+        return;
+    }
+
+    static #String clean(String v) {
+        String a #= v.replace("\t", " ");
+        String b #= a.replace("\n", " ");
+        return b.replace("\r", " ");
+    }
+
+    /** One column of the row (`benchmark`, `variant`); `notes+` appends to notes. */
+    public static void put(String path, String bench, String variant, String column, String value) {
+        String v #= Ledger.clean(value);
+        FileWriter w #= File.openWrite(path, OpenMode.APPEND);
+        w.writeString(bench + "\t" + variant + "\t" + column + "\t" + v + "\n");
+        w.flush();
+        w.close();
+        return;
+    }
+
+    public static void putInt(String path, String bench, String variant, String column, int64 value) {
+        Ledger.put(path, bench, variant, column, "" + value);
+        return;
+    }
+
+    /** tools/amend.py over the written CSV; 0 on success. */
+    public static int32 apply(String results, String ledger) {
+        String[] argv = heap String[4];
+        argv[0] = "python3";
+        argv[1] = "tools/amend.py";
+        argv[2] = "" + results;
+        argv[3] = "" + ledger;
+        Command c = heap Command(#argv);
+        ProcessResult r #= c.run();
+        if (!r.launched()) {
+            System.stdout.println("bench: could not start python3 tools/amend.py");
+            return 1;
+        }
+        return r.exitCode();
+    }
+}

@@ -1,0 +1,3 @@
+# key	app	language	platform	version	dir	clean	build	run
+aspnetcore	web	csharp	ASP.NET Core 10.0.13	10.0.13	competitors/aspnetcore/web	rm -rf bin obj out	{dotnet} publish -c Release -o out --nologo -v q --disable-build-servers	{dotnet} out/web.dll --urls http://127.0.0.1:{port}
+aspnetcore	di	csharp	ASP.NET Core 10.0.13	10.0.13	competitors/aspnetcore/di	rm -rf bin obj out	{dotnet} publish -c Release -o out --nologo -v q --disable-build-servers	{dotnet} out/di.dll

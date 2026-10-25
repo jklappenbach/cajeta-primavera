@@ -1,0 +1,165 @@
+package bench.primavera;
+
+import cajeta.io.file.Path;
+import cajeta.lang.String;
+import dev.cajeta.bench.detect.Sys;
+
+/**
+ * The app table scripts/build-all.sh resolves into build/apps.tsv (one line
+ * per app: key, app, language, platform, version, dir, clean, build, run),
+ * the per-app build status it writes into build/status/<key>-<app>, and the
+ * toolchain versions in build/toolchains.tsv. Paths are relative to bench/,
+ * the directory the harness runs in.
+ */
+public final class Apps {
+
+    public static int32 KEY() { return 0; }
+    public static int32 APP() { return 1; }
+    public static int32 LANGUAGE() { return 2; }
+    public static int32 PLATFORM() { return 3; }
+    public static int32 VERSION() { return 4; }
+    public static int32 DIR() { return 5; }
+    public static int32 CLEAN() { return 6; }
+    public static int32 BUILD() { return 7; }
+    public static int32 RUN() { return 8; }
+
+    /** The build/apps.tsv line for `key` and `app` ("web" or "di"), or "". */
+    public static #String line(String key, String app) {
+        String text #= Sys.readText("build/apps.tsv");
+        String want #= key + "\t" + app + "\t";
+        int32 n = text.byteLength();
+        int32 at = 0;
+        while (at < n) {
+            int32 end = Sys.lineEnd(text, at);
+            String ln #= text.substring(at, end);
+            if (ln.startsWith(want)) {
+                return ln;
+            }
+            at = end + 1;
+        }
+        return "";
+    }
+
+    /** Column `i` of a tab-separated line, or "". */
+    public static #String col(String line, int32 i) {
+        int32 n = line.byteLength();
+        int32 start = 0;
+        int32 k = 0;
+        int32 j = 0;
+        while (j <= n) {
+            if (j == n || line.byteAt(j) == 9) {
+                if (k == i) {
+                    return line.substring(start, j);
+                }
+                k = k + 1;
+                start = j + 1;
+            }
+            j = j + 1;
+        }
+        return "";
+    }
+
+    /** Column `i` of the app's line. */
+    public static #String field(String key, String app, int32 i) {
+        String ln #= Apps.line(key, app);
+        return Apps.col(ln, i);
+    }
+
+    /** `ok`, `skipped: <reason>`, or "" when build-all.sh wrote no status for it. */
+    public static #String status(String key, String app) {
+        String path #= "build/status/" + key + "-" + app;
+        Path p #= Path.of(path);
+        if (!p.exists()) {
+            return "";
+        }
+        String text #= Sys.readText(path);
+        return text.trim();
+    }
+
+    /** A toolchain version from build/toolchains.tsv (`java`, `dotnet`, `python`, `cajeta`, `oha`). */
+    public static #String tool(String name) {
+        String text #= Sys.readText("build/toolchains.tsv");
+        String want #= name + "\t";
+        int32 n = text.byteLength();
+        int32 at = 0;
+        while (at < n) {
+            int32 end = Sys.lineEnd(text, at);
+            String ln #= text.substring(at, end);
+            if (ln.startsWith(want)) {
+                return Apps.col(ln, 1);
+            }
+            at = end + 1;
+        }
+        return "";
+    }
+
+    /** The language_version of a row in `language`. */
+    public static #String languageVersion(String language) {
+        if (language.equals("java")) {
+            return Apps.tool("java");
+        }
+        if (language.equals("csharp")) {
+            return Apps.tool("dotnet");
+        }
+        if (language.equals("python")) {
+            return Apps.tool("python");
+        }
+        return Apps.tool("cajeta");
+    }
+
+    /** Words of `s` split on single spaces, `{port}` replaced by `port`. */
+    public static #String[] words(String s, int32 port) {
+        String t #= s.replace("{port}", "" + port);
+        int32 n = t.byteLength();
+        int32 count = 0;
+        int32 j = 0;
+        boolean inWord = false;
+        while (j < n) {
+            if (t.byteAt(j) == 32) {
+                inWord = false;
+            } else if (!inWord) {
+                inWord = true;
+                count = count + 1;
+            }
+            j = j + 1;
+        }
+        String[] out = heap String[count];
+        int32 k = 0;
+        int32 start = -1;
+        j = 0;
+        while (j <= n) {
+            boolean space = j == n || t.byteAt(j) == 32;
+            if (space) {
+                if (start >= 0) {
+                    out[k] #= t.substring(start, j);
+                    k = k + 1;
+                    start = -1;
+                }
+            } else if (start < 0) {
+                start = j;
+            }
+            j = j + 1;
+        }
+        return out;
+    }
+
+    /** Leading decimal digits of the token after `label` in `text`, or -1. */
+    public static int64 number(String text, String label) {
+        String tok #= Sys.tokenAfter(text, label);
+        int32 n = tok.byteLength();
+        int64 v = 0;
+        int32 i = 0;
+        while (i < n) {
+            int8 c = tok.byteAt(i);
+            if (c < 48 || c > 57) {
+                break;
+            }
+            v = v * 10 + (int64) (c - 48);
+            i = i + 1;
+        }
+        if (i == 0) {
+            return (int64) -1;
+        }
+        return v;
+    }
+}

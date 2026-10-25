@@ -1,0 +1,62 @@
+{
+    // The primavera side of the service benchmarks (bench/primavera/Rest.md,
+    // Templates.md, Startup.md, Build.md): the register-user shape of
+    // samples/register-user reduced to the benchmark contract
+    // (bench/contract/README.md) — POST /users through an authentication
+    // stage, a request-scoped principal, DI-wired singletons and validation —
+    // plus GET /fortunes rendered through cajeta-jinja and GET /health.
+    // `cajeta build` here is the clean build the build-time row times.
+    "details": {
+        "name":                "dev.cajeta.bench.primavera.web",
+        "version":             "0.1.0",
+        "description":         "primavera benchmark: the register-user service and the fortunes page",
+        "license":             "Apache-2.0",
+        "authors":             ["Julian Klappenbach"],
+        "cajeta-lang-version": "1.0"
+    },
+    "settings": {
+        "capabilities": [],
+        "dependencies": {
+            "dev.cajeta.primavera": "0.5.1",
+            "dev.cajeta.http":      "0.9.1",
+            "dev.cajeta.cloud":     "0.4.0",
+            "dev.cajeta.crypto":    "0.1.0",
+            "dev.cajeta.codec":     "0.8.7",
+            "dev.cajeta.logging":   "0.8.6",
+            "dev.cajeta.jinja":     "0.1.6"
+        },
+        "repositories": [
+            { "name": "olla", "url": "https://olla.cajeta.dev", "priority": 0 }
+        ],
+        "build": {
+            "source-root":  "src/main/cajeta",
+            "target":       "host",
+            "entry-method": "bench.primavera.web.BenchServer::main"
+        }
+    },
+    "tasks": {
+        // NOT the release flavor: on cajeta 0.46.3 every optimized build of a
+        // program on cajeta-http's server (O1 and up, release or debug base)
+        // fails to link — the stack drops of Optional<Dispatch> and
+        // Optional<Connection> are referenced and never defined (measured
+        // 2026-10-25; an Optional<T> instantiated in this module loses its
+        // drop the same way). So this is the debug base at O0 with the
+        // runtime checks off, as release has them. The rows record it in
+        // `flags` (apps/web/FLAGS). Return to
+        // { "base": "release", "opt": "O3", "cpu": "native" } once it links.
+        "build": {
+            "description": "Build of the bench server (build/primavera-web); O0, see above",
+            "actions": [
+                { "action": "build",
+                  "flavor": { "base": "debug", "bounds-check": "off", "null-checks": "off",
+                              "overflow-checks": "off" },
+                  "output-path": "build/primavera-web", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+        "clean": {
+            "description": "Wipe build outputs",
+            "actions": [ { "action": "clean" } ]
+        }
+    }
+}

@@ -1,0 +1,4 @@
+#key	app	language	platform	version	dir	clean	build	run
+quarkus-jvm	web	java	Quarkus 3.40.1.1 JVM	3.40.1.1	competitors/quarkus/web	rm -rf target	./mvnw -o -q -DskipTests package	java -Dquarkus.http.port={port} -Dquarkus.http.host=127.0.0.1 -jar target/quarkus-app/quarkus-run.jar
+quarkus-native	web	java	Quarkus 3.40.1.1 native	3.40.1.1	competitors/quarkus/web	rm -rf target	./mvnw -o -q -DskipTests package -Dnative	target/web-runner -Dquarkus.http.port={port} -Dquarkus.http.host=127.0.0.1
+quarkus-jvm	di	java	Quarkus 3.40.1.1 JVM	3.40.1.1	competitors/quarkus/di	rm -rf target	./mvnw -o -q -DskipTests package	java -jar target/quarkus-app/quarkus-run.jar

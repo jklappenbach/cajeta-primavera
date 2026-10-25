@@ -1,0 +1,35 @@
+package bench.primavera.web;
+
+import cajeta.lang.String;
+
+/** The twelve rows of bench/contract/fortunes.json, in id order (contract §GET /fortunes). */
+@Component
+public class FortuneRepository {
+    String[] messages;
+
+    public FortuneRepository() {
+        String[] m = heap String[12];
+        m[0] = "fortune: No such file or directory";
+        m[1] = "A computer scientist is someone who fixes things that aren't broken.";
+        m[2] = "After enough decimal places, nobody gives a damn.";
+        m[3] = "A bad random number generator: 1, 1, 1, 1, 1, 4.33e+67, 1, 1, 1";
+        m[4] = "A computer program does what you tell it to do, not what you want it to do.";
+        m[5] = "Emacs is a nice operating system, but I prefer UNIX. — Tom Christaensen";
+        m[6] = "Any program that runs right is obsolete.";
+        m[7] = "A list is only as strong as its weakest link. — Donald Knuth";
+        m[8] = "Feature: A bug with seniority.";
+        m[9] = "Computers make very fast, very accurate mistakes.";
+        m[10] = "<script>alert(\"This should not be displayed in a browser alert box.\");</script>";
+        m[11] = "フレームワークのベンチマーク";
+        this.messages #= m;
+        return;
+    }
+
+    public int32 count() { return (int32) this.messages.count(); }
+
+    /** The id of row `i`: ids run 1 to 12 in storage order. */
+    public int32 idAt(int32 i) { return i + 1; }
+
+    /** Row `i`'s message, a view the repository keeps. */
+    public String messageAt(int32 i) { return this.messages[i]; }
+}

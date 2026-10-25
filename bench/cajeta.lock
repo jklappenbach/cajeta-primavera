@@ -1,0 +1,32 @@
+{
+  "generator": {
+    "tool": "cajeta",
+    "version": "0.46.3"
+  },
+  "lockfile-version": 1,
+  "manifest-checksum": "sha256:7299d4961a8cd4538f546594fac8df35e191a649faf05d5ef8c9a14aeb28aeb9",
+  "melts": [],
+  "overrides": [],
+  "packages": [
+    {
+      "checksum": "sha256:e862a77301d490e2a34332cbd209c9891618a291b184ebd1ac860a3c38692226",
+      "name": "dev.cajeta.bench",
+      "provided-by": "explicit",
+      "resolved-from": "olla",
+      "version": "0.1.1"
+    }
+  ],
+  "plugins": [],
+  "properties": {
+    "cajeta.version": "0.46.3",
+    "details.group": "dev.cajeta.bench",
+    "details.library": "primavera",
+    "details.name": "dev.cajeta.bench.primavera",
+    "details.version": "0.1.0",
+    "flavor": "",
+    "profile": "",
+    "target": "",
+    "workspace.root": ""
+  },
+  "resolved-at": "2026-10-25T18:51:15Z"
+}

@@ -1,0 +1,9 @@
+# build outputs of the bench project, its apps and the competitor apps
+build/
+.cajeta/
+target/
+bin/
+obj/
+out/
+__pycache__/
+*.log

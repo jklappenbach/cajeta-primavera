@@ -1,0 +1,53 @@
+package bench.primavera;
+
+import cajeta.lang.String;
+
+/**
+ * `primavera/di-graph-100-startup` (Di.md): the 100-component graph of
+ * bench/di/graph.json, ten deep, generated for every framework by
+ * bench/di/generate.py. Each trial runs the platform's DI app once under
+ * dev.cajeta.bench's ExternalBenchmark, which times the whole process: start
+ * the container, resolve the ten level-0 components, make the first injected
+ * call (which reaches all 100), print, exit. peak_rss_kb is the library's,
+ * one more run under /usr/bin/time. The check is the component count:
+ * stdout must be `components=100 checksum=875665`.
+ */
+public class DiBench extends ServiceBench {
+
+    public DiBench(String ledger, String keys) {
+        super("di-graph-100-startup", ledger, "di", keys, "", 0);
+        this.iterations(1, 20);
+        this.timeoutMillis((int64) 120000);
+        return;
+    }
+
+    public void prepare(String variant) {
+        this.begin(variant);
+        String d #= this.dir();
+        this.cmdCwd = "" + d;
+        return;
+    }
+
+    public #String[] argvFor(String variant) {
+        String k #= ServiceBench.keyOf(variant);
+        String run #= Apps.field(k, "di", Apps.RUN());
+        return Apps.words(run, 0);
+    }
+
+    public boolean checkResult() {
+        if (this.lastExitCode != 0) {
+            return false;
+        }
+        boolean ok = this.lastStdout.contains("components=100 checksum=875665");
+        String nm = this.name();
+        String v = this.lastVariant;
+        if (ok) {
+            Ledger.put(this.ledger, nm, v, "notes+", "exec to exit of the DI app, which exits right after the "
+                + "first injected call printed components=100 checksum=875665");
+        } else {
+            String got #= this.lastStdout.trim();
+            Ledger.put(this.ledger, nm, v, "notes+", "component count wrong: " + got);
+        }
+        return ok;
+    }
+}

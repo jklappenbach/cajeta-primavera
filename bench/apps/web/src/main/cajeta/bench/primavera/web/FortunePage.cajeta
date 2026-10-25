@@ -1,0 +1,108 @@
+package bench.primavera.web;
+
+import cajeta.codec.json.JsonArray;
+import cajeta.codec.json.JsonObject;
+import cajeta.codec.json.JsonValue;
+import cajeta.lang.String;
+import dev.cajeta.http.HttpResponse;
+import dev.cajeta.jinja.Environment;
+import dev.cajeta.jinja.Template;
+import dev.cajeta.primavera.web.Response;
+
+/**
+ * `GET /fortunes`: the injected {@link FortuneRepository}'s rows, sorted by
+ * message per request, rendered through cajeta-jinja with autoescape on.
+ * The template is bench/contract/fortunes.jinja verbatim, compiled once.
+ */
+@Component
+public class FortunePage {
+    @Inject FortuneRepository repo;
+    Template page;
+
+    public FortunePage() {
+        Environment env = heap Environment();
+        env.autoescape(true);
+        Template t #= env.compile(FortunePage.SOURCE());
+        this.page #= t;
+        return;
+    }
+
+    public static String SOURCE() {
+        return "<!DOCTYPE html><html><head><title>Fortunes</title></head><body><table><tr><th>id</th><th>message</th></tr>{% for f in fortunes %}<tr><td>{{ f.id }}</td><td>{{ f.message }}</td></tr>{% endfor %}</table></body></html>";
+    }
+
+    /** -1, 0 or 1 as `a` sorts before, with or after `b`, by unsigned UTF-8 bytes (code-point order). */
+    public static int32 compare(String a, String b) {
+        int32 an = a.byteLength();
+        int32 bn = b.byteLength();
+        int32 i = 0;
+        while (i < an && i < bn) {
+            int32 x = ((int32) a.byteAt(i) + 256) % 256;
+            int32 y = ((int32) b.byteAt(i) + 256) % 256;
+            if (x != y) {
+                return x < y ? -1 : 1;
+            }
+            i = i + 1;
+        }
+        if (an == bn) {
+            return 0;
+        }
+        return an < bn ? -1 : 1;
+    }
+
+    static #int8[] key(String k) {
+        return k.toBytes();
+    }
+
+    public void render(Response r) {
+        int32 n = this.repo.count();
+        int32[] order = heap int32[n];
+        int32 i = 0;
+        while (i < n) {
+            order[i] = i;
+            i = i + 1;
+        }
+        i = 1;
+        while (i < n) {
+            int32 k = order[i];
+            int32 j = i - 1;
+            while (j >= 0 && FortunePage.compare(this.repo.messageAt(order[j]), this.repo.messageAt(k)) > 0) {
+                order[j + 1] = order[j];
+                j = j - 1;
+            }
+            order[j + 1] = k;
+            i = i + 1;
+        }
+        JsonArray rows = heap JsonArray();
+        i = 0;
+        while (i < n) {
+            int32 at = order[i];
+            JsonObject row = heap JsonObject();
+            JsonValue id = heap JsonValue();
+            id.setNumber((int64) this.repo.idAt(at));
+            int8[] ik #= FortunePage.key("id");
+            row.put(#ik, 2, #id);
+            JsonValue msg = heap JsonValue();
+            msg.setString(this.repo.messageAt(at));
+            int8[] mk #= FortunePage.key("message");
+            row.put(#mk, 7, #msg);
+            JsonValue rv = heap JsonValue();
+            rv.setObject(#row);
+            rows.add(#rv);
+            i = i + 1;
+        }
+        JsonValue list = heap JsonValue();
+        list.setArray(#rows);
+        JsonObject top = heap JsonObject();
+        int8[] fk #= FortunePage.key("fortunes");
+        top.put(#fk, 8, #list);
+        JsonValue ctx = heap JsonValue();
+        ctx.setObject(#top);
+        String html #= this.page.render(ctx);
+        HttpResponse raw = r.raw();
+        raw.status(200);
+        raw.setHeader("Content-Type", "text/html; charset=utf-8");
+        raw.write(html);
+        return;
+    }
+}

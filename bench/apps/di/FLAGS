@@ -1,0 +1,1 @@
+--release -O3 -march=native (thin LTO off: no runnable lld on this host)

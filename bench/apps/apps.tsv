@@ -1,0 +1,3 @@
+# key	app	language	platform	version	dir	clean	build	run
+primavera	web	cajeta	primavera 0.5.1	0.5.1	apps/web	{cajeta} clean	{cajeta} build	build/primavera-web 127.0.0.1:{port}
+primavera	di	cajeta	primavera 0.5.1	0.5.1	apps/di	{cajeta} clean	{cajeta} build	build/primavera-di

@@ -1,0 +1,6 @@
+{
+  "description": "The DI-at-scale graph (bench/primavera/Di.md): 100 components in 10 levels of 10. Component C<l><j> (level l, index j) depends on C<l+1><j> and C<l+1><(j+1) mod 10> for l < 9; level 9 are leaves. Every component is a singleton (one instance per graph; one result per request for FastAPI Depends). value() is the component's ordinal (10*l + j + 1) plus the value() of each dependency, recomputed on every call. The entry resolves the ten level-0 components, sums their value(), and prints `components=<instances constructed> checksum=<sum>`.",
+  "levels": 10,
+  "width": 10,
+  "fanout": [0, 1]
+}

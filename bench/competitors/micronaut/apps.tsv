@@ -1,0 +1,4 @@
+#key	app	language	platform	version	dir	clean	build	run
+micronaut-jvm	web	java	Micronaut 5.2.3 JVM	5.2.3	competitors/micronaut/web	rm -rf target	./mvnw -o -q -DskipTests package	java -Dmicronaut.server.port={port} -jar target/app.jar
+micronaut-native	web	java	Micronaut 5.2.3 native	5.2.3	competitors/micronaut/web	rm -rf target	./mvnw -o -q -DskipTests package -Dpackaging=native-image	target/app -Dmicronaut.server.port={port}
+micronaut-jvm	di	java	Micronaut 5.2.3 JVM	5.2.3	competitors/micronaut/di	rm -rf target	./mvnw -o -q -DskipTests package	java -jar target/di.jar

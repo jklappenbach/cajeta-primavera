@@ -1,0 +1,10 @@
+# name	method	path	auth	request	status	expected	content-type
+health	GET	/health	none	-	200	health-200.json	application/json
+register	POST	/users	token	register.json	201	register-201.json	application/json
+no-auth	POST	/users	none	register.json	401	unauthorized.json	application/json
+wrong-token	POST	/users	wrong	register.json	401	unauthorized.json	application/json
+missing-username	POST	/users	token	missing-username.json	400	missing-username-400.json	application/json
+missing-password	POST	/users	token	missing-password.json	400	missing-password-400.json	application/json
+short-username	POST	/users	token	short-username.json	400	short-username-400.json	application/json
+short-password	POST	/users	token	short-password.json	400	short-password-400.json	application/json
+fortunes	GET	/fortunes	none	-	200	fortunes-200.html	text/html

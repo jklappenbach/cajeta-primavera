@@ -1,0 +1,60 @@
+package bench.primavera.web;
+
+import cajeta.lang.String;
+import dev.cajeta.primavera.web.JsonBody;
+import dev.cajeta.primavera.web.Response;
+
+/**
+ * `POST /users` behind the stage: the contract's validation in its order,
+ * then the 201 with an id from the injected {@link IdMinter} and the
+ * request-scoped {@link Principal}. Nothing is stored.
+ */
+@Component
+public class UserService {
+    @Inject IdMinter minter;
+
+    public UserService() {
+        return;
+    }
+
+    /** Code points in `s`: the bytes that do not continue a UTF-8 sequence. */
+    public static int32 characters(String s) {
+        int32 n = s.byteLength();
+        int32 c = 0;
+        int32 i = 0;
+        while (i < n) {
+            int32 b = ((int32) s.byteAt(i) + 256) % 256;
+            if (b < 128 || b >= 192) {
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        return c;
+    }
+
+    public void register(String principal, JsonBody b, Response r) {
+        if (!b.isString("username")) {
+            r.error(400, "username is required");
+            return;
+        }
+        if (!b.isString("password")) {
+            r.error(400, "password is required");
+            return;
+        }
+        String username #= b.stringCopy("username");
+        String password #= b.stringCopy("password");
+        int32 un = UserService.characters(username);
+        if (un < 3 || un > 64) {
+            r.error(400, "username must be 3 to 64 characters");
+            return;
+        }
+        if (UserService.characters(password) < 8) {
+            r.error(400, "password must be at least 8 characters");
+            return;
+        }
+        String id #= this.minter.mint(username);
+        r.json(201).field("id", id).field("username", username)
+            .fieldBool("confirmed", false).field("registeredBy", principal).end();
+        return;
+    }
+}

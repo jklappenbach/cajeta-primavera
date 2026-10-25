@@ -1,0 +1,173 @@
+package bench.primavera;
+
+import cajeta.lang.String;
+
+/**
+ * A row measured by launching the server afresh (Startup.md): `cold-start`
+ * (exec to the first 200 from GET /health, 20 launches), `idle-rss` (the
+ * resident set two seconds after that first 200), `loaded-rss` (the resident
+ * set after 60 s of the contract's POST /users at 512 connections).
+ *
+ * Each trial is one `tools/svc.py launch`, an external command run by
+ * dev.cajeta.bench's ExternalBenchmark. The harness times the whole helper,
+ * which also covers Python's start and the server's teardown, so the row's
+ * figure is the one the helper prints: its clock starts just before the
+ * fork, and it samples /proc/<pid>/status (VmRSS, VmHWM) of the running
+ * server, which the library's `/usr/bin/time` rusage cannot do for a
+ * process that does not exit on its own.
+ */
+public class LaunchBench extends ServiceBench {
+    public String mode;
+    public int64[] first;
+    public int64[] rss;
+    public int64[] hwm;
+    public int64[] rps;
+    public int32 n;
+    public int64 peak;
+    public int32 loadSeconds;
+
+    public LaunchBench(String page, String ledger, String keys, int32 portBase, String mode) {
+        super(page, ledger, "web", keys, "", portBase);
+        this.mode = "" + mode;
+        this.first = heap int64[64];
+        this.rss = heap int64[64];
+        this.hwm = heap int64[64];
+        this.rps = heap int64[64];
+        this.n = 0;
+        this.peak = -1;
+        this.timeoutMillis((int64) 600000);
+        this.loadSeconds = 60;
+        if (this.smoke) {
+            this.loadSeconds = 3;
+        }
+        if (mode.equals("cold")) {
+            this.iterations(1, 20);
+        } else if (mode.equals("idle")) {
+            this.iterations(0, 5);
+        } else {
+            this.iterations(0, 3);
+        }
+        return;
+    }
+
+    public void prepare(String variant) {
+        this.begin(variant);
+        this.n = 0;
+        this.peak = -1;
+        return;
+    }
+
+    public #String[] argvFor(String variant) {
+        int32 p = this.nextPort();
+        String run #= Apps.field(this.key, "web", Apps.RUN());
+        String[] words #= Apps.words(run, p);
+        int32 w = (int32) words.count();
+        int32 lead = 15;
+        String[] a = heap String[lead + 1 + w];
+        a[0] = "python3";
+        a[1] = "tools/svc.py";
+        a[2] = "launch";
+        a[3] = "--dir";
+        String d #= this.dir();
+        a[4] = "" + d;
+        a[5] = "--port";
+        a[6] = "" + p;
+        a[7] = "--log";
+        String log #= this.absLog();
+        a[8] = "" + log;
+        a[9] = "--pids";
+        String pids #= this.absPids();
+        a[10] = "" + pids;
+        a[11] = "--timeout";
+        a[12] = "180";
+        if (this.mode.equals("idle")) {
+            a[13] = "--settle";
+            a[14] = "2";
+        } else if (this.mode.equals("loaded")) {
+            a[13] = "--load";
+            a[14] = "" + this.loadSeconds + ":512";
+        } else {
+            a[13] = "--settle";
+            a[14] = "0";
+        }
+        a[15] = "--";
+        int32 i = 0;
+        while (i < w) {
+            a[lead + 1 + i] = "" + words[i];
+            i = i + 1;
+        }
+        return a;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        this.lastVariant = "" + variant;
+        int32 i = 0;
+        while (i < iterations) {
+            boolean warm = this.warming();
+            if (!warm || this.mode.equals("cold")) {
+                this.execute(variant);
+                if (!warm && this.n < 64) {
+                    String o = this.lastStdout;
+                    this.first[this.n] = Apps.number(o, "first200_ns=");
+                    this.rss[this.n] = Apps.number(o, "rss_kb=");
+                    this.hwm[this.n] = Apps.number(o, "hwm_kb=");
+                    this.rps[this.n] = Apps.number(o, "rps=");
+                    this.n = this.n + 1;
+                }
+            }
+            this.calls = this.calls + 1;
+            i = i + 1;
+        }
+        return;
+    }
+
+    public boolean checkResult() {
+        if (this.lastExitCode != 0 || this.n == 0) {
+            return false;
+        }
+        int32 k = this.n;
+        int32 j = 0;
+        while (j < k) {
+            if (this.first[j] <= 0 || this.rss[j] <= 0) {
+                return false;
+            }
+            j = j + 1;
+        }
+        String nm = this.name();
+        String v = this.lastVariant;
+        String lg = this.ledger;
+        String rl #= Stats.list(this.rss, k);
+        String hl #= Stats.list(this.hwm, k);
+        int64 mrss = Stats.median(this.rss, k);
+        int64 mhwm = Stats.median(this.hwm, k);
+        Stats.times(lg, nm, v, this.first, k);
+        Ledger.putInt(lg, nm, v, "trials", (int64) k);
+        if (this.mode.equals("cold")) {
+            Ledger.putInt(lg, nm, v, "warmup", (int64) this.warmCount());
+            this.peak = mhwm;
+            Ledger.put(lg, nm, v, "notes+", "exec to the first 200 from GET /health, polled every 1 ms; "
+                + k + " launches; peak_rss_kb is VmHWM at that 200 (median); vmhwm_kb=" + hl);
+        } else if (this.mode.equals("idle")) {
+            Ledger.putInt(lg, nm, v, "warmup", (int64) 0);
+            this.peak = mrss;
+            Ledger.put(lg, nm, v, "notes+", "peak_rss_kb is VmRSS 2 s after the first 200 (median of "
+                + k + " launches); vmrss_kb=" + rl + "; vmhwm_kb=" + hl
+                + "; time columns are exec to that first 200");
+        } else {
+            Ledger.putInt(lg, nm, v, "warmup", (int64) 0);
+            this.peak = mrss;
+            String ohaV #= Apps.tool("oha");
+            String pl #= Stats.list(this.rps, k);
+            Ledger.put(lg, nm, v, "notes+", "peak_rss_kb is VmRSS after " + this.loadSeconds
+                + " s of POST /users at 512 connections (oha " + ohaV + ", -w), median of " + k
+                + " launches; vmrss_kb=" + rl + "; vmhwm_kb=" + hl + "; errors=0; rps=" + pl
+                + "; time columns are exec to the first 200");
+        }
+        Ledger.putInt(lg, nm, v, "peak_rss_kb", this.peak);
+        return true;
+    }
+
+    public int64 measuredPeakRssKb() {
+        return this.peak;
+    }
+}

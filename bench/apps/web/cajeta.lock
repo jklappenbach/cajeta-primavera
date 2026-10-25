@@ -1,0 +1,81 @@
+{
+  "generator": {
+    "tool": "cajeta",
+    "version": "0.46.3"
+  },
+  "lockfile-version": 1,
+  "manifest-checksum": "sha256:ff74943ff276433b6f7c641c63c81570c9cad8e91c5a2b45bb9f09a2565c2ddf",
+  "melts": [],
+  "overrides": [],
+  "packages": [
+    {
+      "checksum": "sha256:29a4c00c635de25b8b7d5c842ac7a268db3e7384f6907df52fa6f8c434aa3c20",
+      "name": "dev.cajeta.http",
+      "provided-by": "explicit",
+      "resolved-from": "olla",
+      "version": "0.9.1"
+    },
+    {
+      "checksum": "sha256:cc35bfd4e17d11893eeaae5665cf378443529144b5039aaf6dc86b62a86944f1",
+      "name": "dev.cajeta.crypto",
+      "provided-by": "explicit",
+      "resolved-from": "olla",
+      "version": "0.1.0"
+    },
+    {
+      "checksum": "sha256:71e9bc7dc7d76de145d2596773b258872305d88b0335ab15321d21ae39dce6a6",
+      "name": "dev.cajeta.codec",
+      "provided-by": "explicit",
+      "resolved-from": "olla",
+      "version": "0.8.7"
+    },
+    {
+      "checksum": "sha256:4b1fb7e63693445a2054b43763365f494012b8dc8dbd2d5e3d5ac4c8cc5e58e9",
+      "name": "dev.cajeta.jinja",
+      "provided-by": "explicit",
+      "resolved-from": "olla",
+      "version": "0.1.6"
+    },
+    {
+      "checksum": "sha256:20ec85544818a8462ad55b7ce2b2fc785d2fe266ededdd47922ccebbc4137a5f",
+      "name": "dev.cajeta.primavera",
+      "provided-by": "explicit",
+      "resolved-from": "olla",
+      "version": "0.5.1"
+    },
+    {
+      "checksum": "sha256:f9d1f1b8bd650a209801f4e6e10c03daeb3871aac3b68d40dfa6c45248dfe657",
+      "name": "dev.cajeta.cloud",
+      "provided-by": "explicit",
+      "resolved-from": "olla",
+      "version": "0.4.0"
+    },
+    {
+      "checksum": "sha256:c23ea192c67d31b44f84029b05b6e13a0f065c911c10f367b20825c6892037be",
+      "name": "dev.cajeta.logging",
+      "provided-by": "explicit",
+      "resolved-from": "olla",
+      "version": "0.8.6"
+    },
+    {
+      "checksum": "sha256:a02c568dd00c5773bdd9f3bd233edc0cd2fe2c7130a1b2c191b36cf13366655f",
+      "name": "dev.cajeta.unit",
+      "provided-by": "explicit",
+      "resolved-from": "olla",
+      "version": "0.3.6"
+    }
+  ],
+  "plugins": [],
+  "properties": {
+    "cajeta.version": "0.46.3",
+    "details.group": "dev.cajeta.bench.primavera",
+    "details.library": "web",
+    "details.name": "dev.cajeta.bench.primavera.web",
+    "details.version": "0.1.0",
+    "flavor": "",
+    "profile": "",
+    "target": "",
+    "workspace.root": ""
+  },
+  "resolved-at": "2026-10-25T19:04:36Z"
+}
