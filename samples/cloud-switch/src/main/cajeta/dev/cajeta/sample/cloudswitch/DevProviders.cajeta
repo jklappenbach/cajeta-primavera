@@ -1,0 +1,21 @@
+package dev.cajeta.sample.cloudswitch;
+
+import cajeta.lang.String;
+import dev.cajeta.cloud.identity.IdentityConfig;
+import dev.cajeta.cloud.kv.KeyValueConfig;
+import dev.cajeta.cloud.object.ObjectStoreConfig;
+import dev.cajeta.cloud.queue.QueueConfig;
+
+/**
+ * The memory drivers for every port in a test or dev build, so the sample
+ * runs with nothing configured. Cloudflare's adapters are compiled in too,
+ * so an unnamed provider would be ambiguous; naming `memory` here settles
+ * it in code, which wins over the environment (identity spec §9.5). A
+ * production build has no such component and reads the environment.
+ */
+@Component
+@Profile({"test", "dev", "development"})
+public final class DevProviders implements ObjectStoreConfig, QueueConfig, KeyValueConfig, IdentityConfig {
+    public DevProviders() { return; }
+    public String provider() { return "memory"; }
+}

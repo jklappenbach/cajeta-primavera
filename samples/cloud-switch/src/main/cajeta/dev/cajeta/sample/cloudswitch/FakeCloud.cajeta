@@ -1,0 +1,19 @@
+package dev.cajeta.sample.cloudswitch;
+
+import cajeta.lang.String;
+import cajeta.lang.System;
+import dev.cajeta.cloud.cloudflare.testkit.FakeCloudflareServer;
+
+/**
+ * `fake-cloudflare <addr>`: the testkit's FakeCloudflareServer in its own
+ * process, so the self-test can run the production build against it.
+ */
+public final class FakeCloud {
+    public static int32 main(String[] args) {
+        String addr = args.count() > 0 ? args[0] : "127.0.0.1:0";
+        FakeCloudflareServer s #= FakeCloudflareServer.open(addr);
+        System.stdout.println("fake-cloudflare listening on " + s.port());
+        s.serve();
+        return 0;
+    }
+}

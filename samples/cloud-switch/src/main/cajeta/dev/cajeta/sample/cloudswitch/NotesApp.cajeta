@@ -1,0 +1,248 @@
+package dev.cajeta.sample.cloudswitch;
+
+import cajeta.lang.String;
+import cajeta.lang.System;
+import dev.cajeta.cloud.CloudException;
+import dev.cajeta.cloud.SelectionException;
+import dev.cajeta.cloud.identity.IdentityException;
+import dev.cajeta.cloud.identity.IdentitySelectionException;
+import dev.cajeta.cloud.identity.IdentitySelector;
+import dev.cajeta.cloud.identity.TokenUse;
+import dev.cajeta.cloud.identity.UserPool;
+import dev.cajeta.cloud.kv.KeyValueSelector;
+import dev.cajeta.cloud.kv.KeyValueStore;
+import dev.cajeta.cloud.kv.KvEntry;
+import dev.cajeta.cloud.kv.PutOptions;
+import dev.cajeta.cloud.object.ObjectStore;
+import dev.cajeta.cloud.object.ObjectStoreSelector;
+import dev.cajeta.cloud.object.StatResult;
+import dev.cajeta.cloud.queue.MessageAttributes;
+import dev.cajeta.cloud.queue.MessageQueue;
+import dev.cajeta.cloud.queue.QueueSelector;
+import dev.cajeta.cloud.queue.Received;
+import dev.cajeta.primavera.identity.MemoryUserDirectory;
+import dev.cajeta.primavera.security.Policy;
+import dev.cajeta.primavera.security.SecurityContext;
+import dev.cajeta.primavera.security.WebSecurity;
+import dev.cajeta.primavera.web.Endpoints;
+import dev.cajeta.primavera.web.JsonBody;
+import dev.cajeta.primavera.web.RequestView;
+import dev.cajeta.primavera.web.Response;
+import dev.cajeta.primavera.web.WebServer;
+import dev.cajeta.primavera.web.WebServerBuilder;
+
+/**
+ * The provider-switch sample (cajeta-cloud-cloudflare spec 10.4): a notes
+ * service written against the four ports alone. A note's text goes to the
+ * object store, the note count to the key-value store, and a `created`
+ * event to the queue, and `GET /me` needs a token the identity provider
+ * verifies. Which providers serve them is configuration: `DevProviders`
+ * names the memory drivers in a test or dev build, and a production build
+ * reads `OBJECT_STORE_PROVIDER`, `QUEUE_PROVIDER`, `KV_PROVIDER` and
+ * `IDENTITY_PROVIDER`. With all four set to Cloudflare's adapters (`cloudflare`,
+ * and `access` for identity) it runs on R2, Queues, Workers KV and Access with
+ * no change to this class.
+ */
+public final class NotesApp {
+
+    ObjectStore store;
+    MessageQueue queue;
+    KeyValueStore kv;
+    UserPool pool;
+    MemoryUserDirectory directory;
+    String chosen;
+
+    /** An app over the four ports, which it borrows when lent and owns when handed over. */
+    public NotesApp(ObjectStore store, MessageQueue queue, KeyValueStore kv, UserPool pool) {
+        this.store #= store;
+        this.queue #= queue;
+        this.kv #= kv;
+        this.pool #= pool;
+        this.directory = heap MemoryUserDirectory();
+        this.chosen = "";
+        return;
+    }
+
+    /**
+     * The app over the providers the build selects. A production build with
+     * a provider unnamed throws SelectionException or
+     * IdentitySelectionException, naming the configuration key.
+     */
+    public static #NotesApp select() {
+        ObjectStoreSelector os = ObjectStoreSelector.__cajeta_inject();
+        QueueSelector qs = QueueSelector.__cajeta_inject();
+        KeyValueSelector ks = KeyValueSelector.__cajeta_inject();
+        IdentitySelector ids = IdentitySelector.__cajeta_inject();
+        NotesApp app = heap NotesApp(os.store(), qs.queue(), ks.store(), ids.pool());
+        app.chosen = "objectstore=" + os.provider() + " queue=" + qs.provider() + " kv=" + ks.provider()
+            + " identity=" + ids.provider();
+        return #app;
+    }
+
+    /** Which provider serves each port, as `objectstore=memory queue=memory ...`. */
+    public String providers() { return this.chosen; }
+
+    public ObjectStore objects() { return this.store; }
+    public MessageQueue events() { return this.queue; }
+    public KeyValueStore values() { return this.kv; }
+    public UserPool users() { return this.pool; }
+    public MemoryUserDirectory records() { return this.directory; }
+
+    /** The note count after one more note, kept in the key-value store as decimal text. */
+    static int64 nextCount(KeyValueStore kv) {
+        KvEntry e #= kv.get("notes/count");
+        int64 n = 0L;
+        if (e != null) {
+            int8[] b = e.value();
+            for (int64 i = 0L; i < (int64) b.count(); i++) n = n * 10L + (int64) (b[i] - (int8) 48);
+        }
+        n = n + 1L;
+        String text #= "" + n;
+        int8[] bytes #= text.toBytes();
+        PutOptions o = heap PutOptions();
+        kv.put("notes/count", bytes, o);
+        return n;
+    }
+
+    /** `POST /notes` with `{"text": ...}`: 201 with the note's id; 400 without text. */
+    public static void create(ObjectStore store, MessageQueue queue, KeyValueStore kv, JsonBody b, Response r) {
+        if (!b.isString("text")) {
+            r.error(400, "text is required");
+            return;
+        }
+        String text #= b.stringCopy("text");
+        int64 n = NotesApp.nextCount(kv);
+        String id #= "note-" + n;
+        int8[] bytes #= text.toBytes();
+        String etag #= store.put("notes/" + id, bytes, "text/plain");
+        int8[] event #= ("created " + id).toBytes();
+        MessageAttributes attrs = heap MessageAttributes();
+        String sent #= queue.send(event, attrs, 0L);
+        r.json(201).field("id", id).field("count", n).end();
+        return;
+    }
+
+    /** `GET /notes/{id}`: the note's text, or 404. */
+    public static void read(ObjectStore store, RequestView q, Response r) {
+        String id #= q.paramString("id");
+        StatResult st #= store.stat("notes/" + id);
+        if (!st.exists) {
+            r.error(404, "no such note");
+            return;
+        }
+        int8[] bytes #= store.get("notes/" + id);
+        String text = heap String(#bytes, (int32) st.size);
+        r.json(200).field("id", id).field("text", text).end();
+        return;
+    }
+
+    /** `GET /events`: takes and acknowledges up to ten queued events and counts them. */
+    public static void drain(MessageQueue queue, Response r) {
+        Received got #= queue.receive(10, 30L);
+        for (int32 i = 0; i < got.count(); i++) {
+            queue.ack(got.messageAt(i).receipt());
+        }
+        r.json(200).field("events", (int64) got.count()).end();
+        return;
+    }
+
+    /** `GET /me`: the signed-in user's name. */
+    public static void me(Response r) {
+        SecurityContext who = SecurityContext.current();
+        r.json(200).field("username", who.username()).end();
+        return;
+    }
+
+    /** The sample's server on `addr` over `app`. */
+    public static #WebServer server(String addr, NotesApp app) {
+        ObjectStore store = app.objects();
+        MessageQueue queue = app.events();
+        KeyValueStore kv = app.values();
+        Endpoints api = heap Endpoints();
+        WebSecurity sec = heap WebSecurity(app.users(), app.records());
+        api.json("POST", "/notes", (RequestView q, JsonBody b, Response r) -> NotesApp.create(store, queue, kv, b, r));
+        sec.rule(api.last(), Policy.anyone());
+        api.route("GET", "/notes/{id}", (RequestView q, Response r) -> NotesApp.read(store, q, r));
+        sec.rule(api.last(), Policy.anyone());
+        api.route("GET", "/events", (RequestView q, Response r) -> NotesApp.drain(queue, r));
+        sec.rule(api.last(), Policy.anyone());
+        api.route("GET", "/me", (RequestView q, Response r) -> NotesApp.me(r));
+        sec.rule(api.last(), Policy.authenticated());
+        WebServerBuilder b #= WebServer.builder();
+        b.bind(addr);
+        b.endpoints(#api);
+        b.guard(#sec);
+        return b.build();
+    }
+
+    /**
+     * One round trip through each selected provider, printed a line a port:
+     * an object written, read back and deleted, a message sent, received and
+     * acknowledged, a value written and read back, and a malformed token
+     * refused. Returns the number of failures.
+     */
+    public int32 check() {
+        int32 failures = 0;
+        int8[] probe #= "cloud-switch probe".toBytes();
+        String etag #= this.store.put("check/probe", probe, "text/plain");
+        int8[] back #= this.store.get("check/probe");
+        boolean deleted = this.store.delete("check/probe");
+        boolean objectsOk = back.count() == probe.count() && deleted;
+        if (!objectsOk) failures = failures + 1;
+        System.stdout.println("check objectstore " + (objectsOk ? "ok" : "FAILED"));
+
+        MessageAttributes attrs = heap MessageAttributes();
+        String id #= this.queue.send(probe, attrs, 0L);
+        Received got #= this.queue.receive(10, 30L);
+        boolean queueOk = got.count() == 1 && got.messageAt(0).body().count() == probe.count();
+        for (int32 i = 0; i < got.count(); i++) this.queue.ack(got.messageAt(i).receipt());
+        if (!queueOk) failures = failures + 1;
+        System.stdout.println("check queue " + (queueOk ? "ok" : "FAILED"));
+
+        PutOptions o = heap PutOptions();
+        this.kv.put("check/probe", probe, o);
+        KvEntry e #= this.kv.get("check/probe");
+        boolean kvOk = e != null && e.value().count() == probe.count();
+        if (!kvOk) failures = failures + 1;
+        System.stdout.println("check kv " + (kvOk ? "ok" : "FAILED"));
+
+        boolean refused = false;
+        try {
+            this.pool.verifier().verify("not.a.token", TokenUse.ACCESS());
+        } catch (IdentityException ex) {
+            refused = true;
+        }
+        if (!refused) failures = failures + 1;
+        System.stdout.println("check identity " + (refused ? "ok" : "FAILED") + ": a malformed token is refused");
+        return failures;
+    }
+
+    /**
+     * `cloud-switch [addr]` serves on `addr` (127.0.0.1:8080 by default);
+     * `cloud-switch --check` runs `check()` and exits. Either refuses to start,
+     * exit 2, when a provider cannot be selected.
+     */
+    public static int32 main(String[] args) {
+        boolean checking = args.count() > 0 && args[0].equals("--check");
+        String addr = (args.count() > 0 && !checking) ? args[0] : "127.0.0.1:8080";
+        try {
+            NotesApp app #= NotesApp.select();
+            System.stdout.println("cloud-switch providers: " + app.providers());
+            if (checking) {
+                int32 failed = app.check();
+                System.stdout.println(failed == 0 ? "check passed" : "check failed");
+                return failed == 0 ? 0 : 1;
+            }
+            WebServer web #= NotesApp.server(addr, app);
+            System.stdout.println("cloud-switch listening on " + addr);
+            web.serve();
+        } catch (SelectionException e) {
+            System.stdout.println("cloud-switch refuses to start: " + e.getMessage());
+            return 2;
+        } catch (IdentitySelectionException e) {
+            System.stdout.println("cloud-switch refuses to start: " + e.getMessage());
+            return 2;
+        }
+        return 0;
+    }
+}

@@ -1,0 +1,76 @@
+{
+    // The provider-switch sample (cajeta-cloud-cloudflare spec 10.4): a notes
+    // service over the object-store, queue, key-value and identity ports that
+    // runs on the memory drivers in a test or dev build and on Cloudflare's
+    // adapters when a production build's environment names them. The
+    // primavera repo's test task runs its self-test so it cannot rot.
+    "details": {
+        "name":               "dev.cajeta.sample.cloudswitch",
+        "version":            "0.1.0",
+        "description":        "primavera sample: one notes service on the memory drivers or on Cloudflare, by configuration alone",
+        "license":            "Apache-2.0",
+        "authors":            ["Julian Klappenbach"],
+        "cajeta-lang-version": "1.0"
+    },
+
+    "settings": {
+        "toolchain": {
+            "version": "0.49.0",
+            "from":    "https://olla.cajeta.dev"
+        },
+        "capabilities": ["env", "network"],
+        // cloud 0.6.0 makes the memory drivers `memory` components and adds
+        // the object-store selector; cloud.cloudflare 0.2.0 adds the R2
+        // component, the endpoint overrides and FakeCloudflareServer.
+        "dependencies": {
+            "dev.cajeta.primavera":        "0.5.1",
+            "dev.cajeta.http":             "0.9.1",
+            "dev.cajeta.cloud":            "0.6.0",
+            "dev.cajeta.cloud.s3":         "0.1.1",
+            "dev.cajeta.cloud.cloudflare": "0.2.0",
+            "dev.cajeta.crypto":           "0.2.0",
+            "dev.cajeta.codec":            "0.9.1"
+        },
+        "dev-dependencies": {},
+        "repositories": [
+            { "name": "olla", "url": "https://olla.cajeta.dev", "priority": 0 }
+        ],
+        "build": { "target": "host" }
+    },
+
+    "tasks": {
+        "build": {
+            "description": "Build the sample server",
+            "actions": [
+                { "action": "build", "flavor": "debug",
+                  "entry-method": "dev.cajeta.sample.cloudswitch.NotesApp.main", "id": "app" }
+            ],
+            "outputs": { "path": "${app.path}" }
+        },
+
+        "run": {
+            "description": "Serve the sample on 127.0.0.1:8080 (a dev build: the memory drivers)",
+            "actions": [
+                { "action": "build", "flavor": "debug", "profile": "dev",
+                  "entry-method": "dev.cajeta.sample.cloudswitch.NotesApp.main", "id": "app" },
+                { "action": "exec", "command": "${app.path}", "args": [] }
+            ]
+        },
+
+        "test": {
+            "description": "Build the production server, the fake Cloudflare server and the self-test, then run the self-test",
+            "actions": [
+                { "action": "build", "flavor": "debug",
+                  "entry-method": "dev.cajeta.sample.cloudswitch.NotesApp.main",
+                  "output-path": "build/exe/cloud-switch-production", "id": "app" },
+                { "action": "build", "flavor": "debug",
+                  "entry-method": "dev.cajeta.sample.cloudswitch.FakeCloud.main",
+                  "output-path": "build/exe/fake-cloudflare", "id": "fake" },
+                { "action": "build", "flavor": "debug", "profile": "test",
+                  "entry-method": "dev.cajeta.sample.cloudswitch.SampleSelfTest.run",
+                  "id": "testbin" },
+                { "action": "test", "input": "${testbin.path}", "args": ["${app.path}", "${fake.path}"] }
+            ]
+        }
+    }
+}

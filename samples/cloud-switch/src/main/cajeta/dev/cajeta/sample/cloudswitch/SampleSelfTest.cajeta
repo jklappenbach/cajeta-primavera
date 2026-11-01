@@ -1,0 +1,237 @@
+package dev.cajeta.sample.cloudswitch;
+
+import cajeta.io.net.SocketAddress;
+import cajeta.io.net.TcpListener;
+import cajeta.lang.String;
+import cajeta.lang.System;
+import cajeta.concurrent.Fiber;
+import cajeta.process.Command;
+import cajeta.process.Process;
+import cajeta.process.ProcessResult;
+import cajeta.time.Duration;
+import dev.cajeta.cloud.identity.MemoryUserPool;
+import dev.cajeta.cloud.identity.RegistrationResult;
+import dev.cajeta.cloud.identity.SignInResult;
+import dev.cajeta.cloud.identity.UserPool;
+import dev.cajeta.http.Bytes;
+import dev.cajeta.http.ClientRequest;
+import dev.cajeta.http.ClientResponse;
+import dev.cajeta.http.client.HttpClient;
+import dev.cajeta.primavera.identity.UserRecord;
+import dev.cajeta.primavera.web.WebServer;
+
+/**
+ * The sample's self-test (cajeta-cloud-cloudflare plan 7.1.2), built in the
+ * test profile and handed the production build and the fake-server build.
+ * It runs the sample both ways:
+ *
+ * 1. In this process, on the memory drivers `DevProviders` names: the notes
+ *    contract over HTTP, with `GET /me` refused without a token and served
+ *    with one the memory pool issued.
+ * 2. The production build with no provider named refuses to start.
+ * 3. The production build's `--check`, with only environment variables
+ *    naming Cloudflare's adapters, against a FakeCloudflareServer in its own
+ *    process: R2, Queues and Workers KV complete a round trip, and Access
+ *    refuses a malformed token.
+ */
+public final class SampleSelfTest {
+
+    static int32 checks = 0;
+    static int32 failures = 0;
+
+    static void check(boolean ok, String what) {
+        SampleSelfTest.checks = SampleSelfTest.checks + 1;
+        if (ok) {
+            System.stdout.println("  ok    " + what);
+        } else {
+            SampleSelfTest.failures = SampleSelfTest.failures + 1;
+            System.stdout.println("  FAIL  " + what);
+        }
+        return;
+    }
+
+    static async int32 serve(WebServer web) {
+        web.serve();
+        return 1;
+    }
+
+    static async int32 contract(int32 port, String token) {
+        HttpClient client #= heap HttpClient();
+        client.exchangeTimeout(15000);
+        String base = "http://127.0.0.1:" + port;
+
+        ClientRequest post #= ClientRequest.post(base + "/notes");
+        post.header("Content-Type", "application/json");
+        post.body("{\"text\":\"buy cajeta\"}");
+        ClientResponse r1 #= client.send(post);
+        String b1 #= r1.bodyString();
+        SampleSelfTest.check(r1.status() == 201 && b1.indexOf("\"note-1\"") >= 0L, "POST /notes stores note-1 (" + b1 + ")");
+
+        ClientResponse r2 #= client.get(base + "/notes/note-1");
+        String b2 #= r2.bodyString();
+        SampleSelfTest.check(r2.status() == 200 && b2.indexOf("buy cajeta") >= 0L, "GET /notes/note-1 reads it back");
+
+        ClientResponse r3 #= client.get(base + "/notes/note-9");
+        SampleSelfTest.check(r3.status() == 404, "GET /notes/note-9 is 404");
+
+        ClientResponse r4 #= client.get(base + "/events");
+        String b4 #= r4.bodyString();
+        SampleSelfTest.check(r4.status() == 200 && b4.indexOf("\"events\":1") >= 0L, "GET /events takes the created event (" + b4 + ")");
+
+        ClientResponse r5 #= client.get(base + "/me");
+        SampleSelfTest.check(r5.status() == 401, "GET /me without a token is 401");
+
+        ClientRequest me #= ClientRequest.get(base + "/me");
+        me.header("Authorization", "Bearer " + token);
+        ClientResponse r6 #= client.send(me);
+        String b6 #= r6.bodyString();
+        SampleSelfTest.check(r6.status() == 200 && b6.indexOf("\"ada\"") >= 0L, "GET /me with the pool's token names ada (" + b6 + ")");
+        return 1;
+    }
+
+    // An access token for `ada` from the memory pool, with her directory record.
+    static #String signIn(NotesApp app) {
+        UserPool pool = app.users();
+        MemoryUserPool memory = MemoryUserPool.__cajeta_inject();
+        String password = "correct horse battery";
+        RegistrationResult reg #= pool.register("ada", password);
+        String subject #= reg.subject();
+        if (!reg.confirmed()) {
+            String code #= memory.hooks().lastConfirmationCode(subject);
+            pool.confirm("ada", code);
+        }
+        UserRecord rec #= app.records().create("ada", pool.capabilities().adapterName(), subject);
+        SignInResult s #= pool.authenticator().signIn("ada", password);
+        if (!s.isTokens()) return "" + "";
+        return s.tokens().accessToken();
+    }
+
+    static void memoryLeg() {
+        NotesApp app #= NotesApp.select();
+        String chosen = app.providers();
+        SampleSelfTest.check(chosen.equals("objectstore=memory queue=memory kv=memory identity=memory"),
+            "the test build selects the memory drivers with nothing configured (" + chosen + ")");
+        String token #= SampleSelfTest.signIn(app);
+        SampleSelfTest.check(token.byteLength() > 0, "the memory pool issues ada a token");
+        scope {
+            WebServer web #= NotesApp.server("127.0.0.1:0", app);
+            int32 port = web.port();
+            Task<int32> sv = spawn serve(web);
+            Task<int32> tc = spawn contract(port, token);
+            SampleSelfTest.check(await tc == 1, "the notes contract ran to the end");
+            web.shutdown(Duration.ofSeconds(2));
+            SampleSelfTest.check(await sv == 1, "the accept loop exited");
+        }
+        return;
+    }
+
+    static #String outputOf(ProcessResult r) {
+        String out = "";
+        if (r.stdout() != null) out = out + Bytes.toString(r.stdout()[0:(int32) r.stdout().count()]);
+        if (r.stderr() != null) out = out + Bytes.toString(r.stderr()[0:(int32) r.stderr().count()]);
+        return #out;
+    }
+
+    static #ProcessResult runProduction(String binary, String[] argv, #String[] env) {
+        Command cmd = heap Command(#argv);
+        cmd.environment(#env);
+        cmd.captureStdout();
+        cmd.captureStderr();
+        cmd.timeoutMillis(60000L);
+        return cmd.run();
+    }
+
+    static void refusalLeg(String binary) {
+        String[] argv = heap String[2];
+        argv[0] = "" + binary;
+        argv[1] = "--check";
+        String[] env = heap String[1];
+        env[0] = "PATH=/usr/bin:/bin";
+        ProcessResult r #= SampleSelfTest.runProduction(binary, argv, #env);
+        String out #= SampleSelfTest.outputOf(r);
+        SampleSelfTest.check(r.launched() && !r.timedOut() && r.code() == 2 && out.indexOf(".provider") >= 0L,
+            "the production build refuses to start with no provider named (exit " + r.code() + ": " + out + ")");
+        return;
+    }
+
+    // A free local port: bind one, read it, release it.
+    static int32 freePort() {
+        TcpListener l #= TcpListener.bind(SocketAddress.parse("127.0.0.1:0"));
+        int32 p = l.boundPort();
+        l.close();
+        return p;
+    }
+
+    static boolean waitUp(int32 port) {
+        HttpClient client #= heap HttpClient();
+        client.exchangeTimeout(2000);
+        for (int32 i = 0; i < 100; i++) {
+            try {
+                ClientResponse r #= client.get("http://127.0.0.1:" + port + "/cdn-cgi/access/certs");
+                if (r.status() == 200) return true;
+            } catch (Exception e) {
+            }
+            Fiber.sleep(Duration.ofMillis(100));
+        }
+        return false;
+    }
+
+    static void cloudflareLeg(String binary, String fakeBinary) {
+        int32 port = SampleSelfTest.freePort();
+        String[] fargv = heap String[2];
+        fargv[0] = "" + fakeBinary;
+        fargv[1] = "127.0.0.1:" + port;
+        Command fcmd = heap Command(#fargv);
+        Process fake #= fcmd.start();
+        SampleSelfTest.check(fake.launched(), "the fake Cloudflare server starts");
+        boolean up = SampleSelfTest.waitUp(port);
+        SampleSelfTest.check(up, "the fake Cloudflare server answers on port " + port);
+        if (up) {
+            String host = "http://127.0.0.1:" + port;
+            String[] argv = heap String[2];
+            argv[0] = "" + binary;
+            argv[1] = "--check";
+            String[] env = [
+                "PATH=/usr/bin:/bin",
+                "OBJECT_STORE_PROVIDER=cloudflare",
+                "QUEUE_PROVIDER=cloudflare",
+                "KV_PROVIDER=cloudflare",
+                "IDENTITY_PROVIDER=access",
+                "CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef",
+                "CLOUDFLARE_API_TOKEN=fake-api-token",
+                "R2_ACCESS_KEY_ID=fake-key-id",
+                "R2_SECRET_ACCESS_KEY=fake-secret",
+                "R2_BUCKET=notes",
+                "CLOUDFLARE_QUEUE_ID=notes-events",
+                "CLOUDFLARE_KV_NAMESPACE_ID=notes-values",
+                "CLOUDFLARE_ACCESS_TEAM=example-team",
+                "CLOUDFLARE_ACCESS_AUD=example-aud",
+                "CLOUDFLARE_API_BASE_URL=" + host + "/client/v4",
+                "R2_ENDPOINT=" + host + "/r2",
+                "CLOUDFLARE_ACCESS_CERTS_URL=" + host + "/cdn-cgi/access/certs"
+            ];
+            ProcessResult r #= SampleSelfTest.runProduction(binary, argv, #env);
+            String out #= SampleSelfTest.outputOf(r);
+            SampleSelfTest.check(out.indexOf("objectstore=cloudflare queue=cloudflare kv=cloudflare identity=access") >= 0L,
+                "the production build selects Cloudflare's adapters from the environment alone");
+            SampleSelfTest.check(r.launched() && !r.timedOut() && r.code() == 0 && out.indexOf("check passed") >= 0L,
+                "R2, Queues and Workers KV round-trip and Access refuses a malformed token (exit " + r.code() + ": " + out + ")");
+        }
+        fake.close();
+        return;
+    }
+
+    public static int32 run(String[] args) {
+        System.stdout.println("=== cloud-switch self-test ===");
+        SampleSelfTest.memoryLeg();
+        if (args.count() > 1) {
+            SampleSelfTest.refusalLeg(args[0]);
+            SampleSelfTest.cloudflareLeg(args[0], args[1]);
+        } else {
+            SampleSelfTest.check(false, "the self-test is handed the production and fake-server builds");
+        }
+        System.stdout.println("cloud-switch: " + (SampleSelfTest.checks - SampleSelfTest.failures)
+            + " of " + SampleSelfTest.checks + " checks passed");
+        return SampleSelfTest.failures == 0 ? 0 : 1;
+    }
+}
