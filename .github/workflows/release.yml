@@ -104,4 +104,8 @@ jobs:
       # The manifest's `test` task builds with `"profile": "test"` and runs the
       # result, so the suite is self-contained and CI can call it directly.
       test-command: cajeta test
+      # The suite, register-user's PBKDF2-bound self-test and the cloud-switch
+      # sample took 30 minutes on the runner before cloud-switch ran, and 38
+      # in all locally; the default 30-minute cap cut the first full run off.
+      test-timeout-minutes: '60'
     secrets: inherit
