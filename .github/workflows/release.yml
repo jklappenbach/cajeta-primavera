@@ -100,7 +100,7 @@ jobs:
       # refuses a graph whose libraries pin different versions of one
       # dependency (crypto 0.1.0 and 0.2.0) even when the root manifest names
       # the version, and v0.46.3 onward lets the root's pin decide.
-      cajeta-version: v0.50.0
+      cajeta-version: v0.51.0
       # The manifest's `test` task builds with `"profile": "test"` and runs the
       # result, so the suite is self-contained and CI can call it directly.
       test-command: cajeta test
