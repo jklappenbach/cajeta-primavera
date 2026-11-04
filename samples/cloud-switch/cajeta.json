@@ -15,7 +15,7 @@
 
     "settings": {
         "toolchain": {
-            "version": "0.49.0",
+            "version": "0.50.0",
             "from":    "https://olla.cajeta.dev"
         },
         "capabilities": ["env", "network"],
