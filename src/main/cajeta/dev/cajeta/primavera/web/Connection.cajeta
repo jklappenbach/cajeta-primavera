@@ -94,6 +94,16 @@ public class Connection implements WebSocketHandler {
         return;
     }
 
+    /**
+     * Queues `e` for the peer, encoded straight into the send ring: no
+     * string is made and nothing is copied. Same bound and close as `send`:
+     * a record that does not fit is refused, never encoded, and closes the
+     * connection with the overflow code. Returns whether it queued.
+     */
+    public boolean sendEncoded(Encoded e) {
+        return this.enqueueWith(null, e);
+    }
+
     /** Closes the connection with `code` and no reason. */
     public void close(int32 code) {
         if (this.ws != null) {
@@ -250,13 +260,22 @@ public class Connection implements WebSocketHandler {
     // Copies `text` into the next slot and wakes the writer. Never parks: a
     // full queue aborts the connection instead. Returns whether it queued.
     boolean enqueue(String text) {
+        return this.enqueueWith(text, null);
+    }
+
+    // `text` copied, or `e` encoded in place when `text` is null.
+    boolean enqueueWith(String text, Encoded e) {
         boolean abort = false;
         boolean queuedIt = false;
         {
             LockGuard g #= this.gate.acquire();
+            boolean fit = false;
+            if (!this.closing) {
+                fit = text != null ? this.ring.push(text) : this.ring.pushEncoded(e);
+            }
             if (this.closing) {
                 queuedIt = false;
-            } else if (!this.ring.push(text)) {
+            } else if (!fit) {
                 // Past the bound, or one message larger than it (spec §4.2.1,
                 // §4.3): refused, and the connection closes.
                 this.closing = true;

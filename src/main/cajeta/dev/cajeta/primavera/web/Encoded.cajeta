@@ -1,0 +1,18 @@
+package dev.cajeta.primavera.web;
+
+/**
+ * A message that encodes itself straight into a connection's send ring
+ * ({@link Connection#sendEncoded}), so a sender that builds its own text
+ * makes no string and no copy of it: the bytes are written once, into the
+ * queue the writer fiber sends from.
+ *
+ * `encodedSize` is the exact payload length in bytes, UTF-8 text.
+ * `encodeInto` writes exactly that many bytes at `dst[at ..]`. It runs under
+ * the connection's lock, once, and only when the record fits, so it must not
+ * call back into the connection or park. A sender can keep one encoder and
+ * reset its fields before each send, which allocates nothing per message.
+ */
+public interface Encoded {
+    public int32 encodedSize();
+    public void encodeInto(int8[] dst, int32 at);
+}

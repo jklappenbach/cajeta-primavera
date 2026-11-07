@@ -146,6 +146,25 @@ public final class ConnectionRegistry {
         return sent;
     }
 
+    /**
+     * Queues `e` for connection `id`, encoded straight into its send ring
+     * ({@link Connection#sendEncoded}); false when no such connection is
+     * open or the record does not fit, which closes it.
+     */
+    public boolean sendEncoded(int64 id, Encoded e) {
+        LockGuard g #= this.gate.acquire();
+        boolean sent = false;
+        int32 i = 0;
+        while (i < this.liveCount) {
+            Connection c = this.live[i];
+            if (c.id() == id) {
+                sent = c.sendEncoded(e);
+            }
+            i = i + 1;
+        }
+        return sent;
+    }
+
     /** Queues `text` for every open connection. */
     public void broadcast(String text) {
         LockGuard g #= this.gate.acquire();

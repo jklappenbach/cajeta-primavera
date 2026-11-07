@@ -60,9 +60,42 @@ public final class SendRing {
      */
     public boolean push(String text) {
         int32 n = text.byteLength();
+        int32 at = this.reserve(n);
+        if (at < 0) {
+            return false;
+        }
+        int32 i = 0;
+        while (i < n) {
+            this.buf[at + 4 + i] = text.byteAt(i);
+            i = i + 1;
+        }
+        this.commit(at, n);
+        return true;
+    }
+
+    /**
+     * Appends `e` as one record, encoding it straight into the ring; false,
+     * appending nothing and never calling `encodeInto`, when it does not
+     * fit.
+     */
+    public boolean pushEncoded(Encoded e) {
+        int32 n = e.encodedSize();
+        int32 at = this.reserve(n);
+        if (at < 0) {
+            return false;
+        }
+        e.encodeInto(this.buf, at + 4);
+        this.commit(at, n);
+        return true;
+    }
+
+    // Where an `n`-byte record goes, or -1 when it does not fit. Past the
+    // end it goes at the start behind a skip marker, whose bytes count as
+    // used from here; nothing else changes until `commit`.
+    int32 reserve(int32 n) {
         int32 r = n + 4;
         if (r > this.cap) {
-            return false;
+            return -1;
         }
         if (this.used == 0) {
             this.head = 0;
@@ -86,22 +119,20 @@ public final class SendRing {
             // Wrapped: free bytes run from the tail to the head.
             at = this.tail;
         }
-        if (at < 0) {
-            return false;
-        }
+        return at;
+    }
+
+    // Records the `n`-byte payload written at `at + 4` as the newest record.
+    void commit(int32 at, int32 n) {
+        int32 r = n + 4;
         this.putLen(at, n);
-        int32 i = 0;
-        while (i < n) {
-            this.buf[at + 4 + i] = text.byteAt(i);
-            i = i + 1;
-        }
         this.tail = at + r;
         this.used = this.used + r;
         this.counted = this.counted + r;
         if (this.counted > this.peak) {
             this.peak = this.counted;
         }
-        return true;
+        return;
     }
 
     // Moves the head past a skip marker or a too-short tail, if it is at one.

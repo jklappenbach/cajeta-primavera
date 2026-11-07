@@ -20,11 +20,15 @@ import dev.cajeta.http.status.BadRequestException;
 public final class JsonBody {
 
     int8[] store;
+    int32 off;
+    int32 len;
     int32[] idx;
     int32 count;
 
     public JsonBody() {
         this.store = null;
+        this.off = 0;
+        this.len = 0;
         this.idx = heap int32[256];
         this.count = 0;
         return;
@@ -33,6 +37,8 @@ public final class JsonBody {
     /** Indexes `store[off .. off + len)`; raises 400 when it is not a JSON object. */
     public void bind(int8[] store, int32 off, int32 len) {
         this.store #= store;
+        this.off = off;
+        this.len = len;
         if (this.idx.count() < (int64) (len + 16)) {
             this.idx = heap int32[len * 2 + 16];
         }
@@ -79,6 +85,27 @@ public final class JsonBody {
             i = i + 1;
         }
         return i;
+    }
+
+    /**
+     * The array the message is bound over, in place: the message is
+     * `bytes()[offset() .. offset() + length())`. Like every window a handler
+     * sees, it is valid during the handler only, since the next message on
+     * the connection reuses the buffer. A consumer that parses for itself
+     * reads the message here rather than copying it.
+     */
+    public int8[] bytes() {
+        return this.store;
+    }
+
+    /** Where the bound message starts in {@link #bytes}. */
+    public int32 offset() {
+        return this.off;
+    }
+
+    /** The bound message's length in bytes. */
+    public int32 length() {
+        return this.len;
     }
 
     /** True when the object has a top-level field `name`. */

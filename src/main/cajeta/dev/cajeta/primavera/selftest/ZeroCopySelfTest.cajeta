@@ -1,0 +1,270 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.concurrent.AtomicInt32;
+import cajeta.concurrent.Fiber;
+import cajeta.io.net.SocketAddress;
+import cajeta.io.net.TcpStream;
+import cajeta.lang.String;
+import cajeta.time.Duration;
+import dev.cajeta.http.ws.WebSocket;
+import dev.cajeta.http.ws.WsMessage;
+import dev.cajeta.primavera.web.Connection;
+import dev.cajeta.primavera.web.ConnectionRegistry;
+import dev.cajeta.primavera.web.Encoded;
+import dev.cajeta.primavera.web.Endpoints;
+import dev.cajeta.primavera.web.JsonBody;
+import dev.cajeta.primavera.web.SendRing;
+import dev.cajeta.primavera.web.WebServer;
+import dev.cajeta.primavera.web.WebServerBuilder;
+import dev.cajeta.primavera.web.WebSocketEndpoints;
+import dev.cajeta.unit.TestRunner;
+
+/**
+ * Zero-copy paths for a consumer that parses and encodes for itself (cabra).
+ * A message handler reads the bound message in place (`JsonBody.bytes`,
+ * `offset`, `length`), and a sender encodes straight into the connection's
+ * send ring (`sendEncoded`), so neither side copies the message whole. The
+ * ring keeps its byte bound and its overflow close either way.
+ */
+public final class ZeroCopySelfTest {
+    static AtomicInt32 closes = heap AtomicInt32(0);
+    static int32 lastCode;
+    static int64 lastId;
+    static ConnectionRegistry REG;
+    // What the message handler saw of its body, in place.
+    static boolean sawSameStore;
+    static int32 sawLength;
+
+    /** An encoder over a fixed text, counting how often it was asked to write. */
+    static final class TextEncoded implements Encoded {
+        public String text;
+        public int32 calls;
+        public TextEncoded(String text) {
+            this.text #= text;
+            this.calls = 0;
+            return;
+        }
+        public int32 encodedSize() {
+            return this.text.byteLength();
+        }
+        public void encodeInto(int8[] dst, int32 at) {
+            this.calls = this.calls + 1;
+            int32 n = this.text.byteLength();
+            int32 i = 0;
+            while (i < n) {
+                dst[at + i] = this.text.byteAt(i);
+                i = i + 1;
+            }
+            return;
+        }
+    }
+
+    static #String repeat(String unit, int32 n) {
+        String s = "";
+        int32 i = 0;
+        while (i < n) {
+            s = s + unit;
+            i = i + 1;
+        }
+        String out #= s.substring(0, s.byteLength());
+        return #out;
+    }
+
+    static #String head(SendRing r) {
+        int32 off = r.peekOffset();
+        int32 len = r.peekLength();
+        return JsonBody.decode(r.bytes(), off, off + len);
+    }
+
+    static void opened(Connection c) {
+        ZeroCopySelfTest.lastId = c.id();
+    }
+
+    static void message(Connection c, JsonBody b) {
+        ZeroCopySelfTest.sawLength = b.length();
+        ZeroCopySelfTest.sawSameStore = b.bytes() != null && b.offset() == 0;
+        return;
+    }
+
+    static void closed(Connection c, int32 code) {
+        ZeroCopySelfTest.lastCode = code;
+        ZeroCopySelfTest.closes.fetchAdd(1);
+    }
+
+    static #WebServer server(int32 queueBytes) {
+        WebSocketEndpoints ws = heap WebSocketEndpoints();
+        ws.queueBytes(queueBytes);
+        ws.json("/z", (Connection c) -> ZeroCopySelfTest.opened(c),
+                (Connection c, JsonBody b) -> ZeroCopySelfTest.message(c, b),
+                (Connection c, int32 code) -> ZeroCopySelfTest.closed(c, code));
+        WebServerBuilder bld #= WebServer.builder();
+        bld.bind("127.0.0.1:0");
+        bld.endpoints(heap Endpoints());
+        bld.websockets(#ws);
+        return bld.build();
+    }
+
+    static async int32 serve(WebServer web) {
+        web.serve();
+        return 1;
+    }
+
+    static void awaitOpen(WebServer web) {
+        int32 w = 0;
+        while (web.connections().count() == 0 && w < 300) {
+            Fiber.sleep(Duration.ofMillis(10));
+            w = w + 1;
+        }
+    }
+
+    static void awaitClosed(WebServer web) {
+        int32 w = 0;
+        while ((web.connections().count() != 0 || ZeroCopySelfTest.closes.load() == 0) && w < 300) {
+            Fiber.sleep(Duration.ofMillis(10));
+            w = w + 1;
+        }
+    }
+
+    static #TcpStream rawUpgrade(int32 port) {
+        TcpStream peer #= TcpStream.connectAsync(SocketAddress.parse("127.0.0.1:" + port));
+        String hs = "GET /z HTTP/1.1\r\nHost: t\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+            + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+        int8[] hb #= hs.toBytes();
+        peer.writeAllAsync(hb, (int64) 0, (int64) hs.byteLength());
+        return #peer;
+    }
+
+    // An encoded send reaches the peer as the text it encodes, and a handler
+    // sees its message's bytes in place.
+    static async int32 roundTrip(int32 port, WebServer web) {
+        int32 failures = 0;
+        WebSocket ws #= WebSocket.connect("ws://127.0.0.1:" + port + "/z");
+        ZeroCopySelfTest.awaitOpen(web);
+        ws.send("{\"op\":\"ping\",\"n\":7}");
+        TextEncoded e = heap TextEncoded("{\"chunk\":\"encoded in place\"}");
+        boolean took = web.connections().sendEncoded(ZeroCopySelfTest.lastId, e);
+        WsMessage m #= ws.receive();
+        String t #= m.text();
+        if (!took || !t.equals("{\"chunk\":\"encoded in place\"}") || e.calls != 1) {
+            System.stdout.println("  zero-copy: round trip got <" + t + ">, took " + took
+                + ", calls " + e.calls);
+            failures = failures + 1;
+        }
+        int32 w = 0;
+        while (ZeroCopySelfTest.sawLength == 0 && w < 300) {
+            Fiber.sleep(Duration.ofMillis(10));
+            w = w + 1;
+        }
+        if (!ZeroCopySelfTest.sawSameStore || ZeroCopySelfTest.sawLength != 19) {
+            System.stdout.println("  zero-copy: the handler saw length " + ZeroCopySelfTest.sawLength);
+            failures = failures + 1;
+        }
+        ws.close(1000, "done");
+        ZeroCopySelfTest.awaitClosed(web);
+        return failures;
+    }
+
+    // An encoded send past the bound is refused, never written, and closes 1008.
+    static async int32 overflow(int32 port, WebServer web) {
+        int32 failures = 0;
+        ZeroCopySelfTest.closes.store(0);
+        TcpStream slow #= ZeroCopySelfTest.rawUpgrade(port);
+        ZeroCopySelfTest.awaitOpen(web);
+        String big #= "{\"p\":\"" + ZeroCopySelfTest.repeat("y", 3000) + "\"}";
+        TextEncoded e = heap TextEncoded(big);
+        int32 sent = 0;
+        boolean refused = false;
+        while (!refused && sent < 100000) {
+            refused = !web.connections().sendEncoded(ZeroCopySelfTest.lastId, e);
+            sent = sent + 1;
+        }
+        ZeroCopySelfTest.awaitClosed(web);
+        if (!refused || ZeroCopySelfTest.lastCode != 1008 || e.calls != sent - 1) {
+            System.stdout.println("  zero-copy: overflow refused " + refused + ", code "
+                + ZeroCopySelfTest.lastCode + ", calls " + e.calls + " of " + sent);
+            failures = failures + 1;
+        }
+        slow.close();
+        return failures;
+    }
+
+    public static void add(TestRunner t) {
+        t.test("a message handler reads its body in place: the bound bytes, offset and length", () -> {
+            String text = "xx{\"op\":\"chat\"}yy";
+            int8[] store #= text.toBytes();
+            JsonBody b = heap JsonBody();
+            b.bind(store, 2, 13);
+            SelfTest.req(b.bytes() == store, "bytes() is the bound array itself, not a copy");
+            SelfTest.req(b.offset() == 2, "offset() is where the message starts");
+            SelfTest.req(b.length() == 13, "length() is the message's length");
+            SelfTest.req(b.has("op"), "the index still reads the message");
+        });
+
+        t.test("an encoded record is the record push writes, and encodes once", () -> {
+            SendRing a = heap SendRing(64);
+            SendRing b = heap SendRing(64);
+            TextEncoded e = heap TextEncoded("{\"chunk\":\"hi\"}");
+            SelfTest.req(a.push("{\"chunk\":\"hi\"}"), "push queues it");
+            SelfTest.req(b.pushEncoded(e), "pushEncoded queues it");
+            String ha #= ZeroCopySelfTest.head(a);
+            String hb #= ZeroCopySelfTest.head(b);
+            SelfTest.req(ha.equals(hb), "the same payload");
+            SelfTest.req(a.queuedBytes() == b.queuedBytes(), "the same bytes counted");
+            SelfTest.req(e.calls == 1, "encodeInto ran once");
+        });
+
+        t.test("an encoded record past the bound is refused without being encoded", () -> {
+            SendRing r = heap SendRing(20);
+            TextEncoded big = heap TextEncoded(ZeroCopySelfTest.repeat("q", 17));
+            SelfTest.req(!r.pushEncoded(big), "17 + 4 bytes does not fit 20");
+            SelfTest.req(big.calls == 0, "and encodeInto never ran");
+            SelfTest.req(r.queuedBytes() == 0, "nothing was queued");
+        });
+
+        t.test("encoded records keep order across a wrap", () -> {
+            SendRing r = heap SendRing(40);
+            TextEncoded a = heap TextEncoded("AAAAAAAAAA");
+            TextEncoded b = heap TextEncoded("BBBBBBBBBB");
+            TextEncoded c = heap TextEncoded("CCCCCCCC");
+            TextEncoded d = heap TextEncoded("DDDDDDDDDD");
+            SelfTest.req(r.pushEncoded(a) && r.pushEncoded(b), "A and B take 28 bytes");
+            r.pop();
+            SelfTest.req(r.pushEncoded(c), "C fits the 12 bytes left at the end");
+            r.pop();
+            SelfTest.req(r.pushEncoded(d), "D wraps to the start");
+            String hc #= ZeroCopySelfTest.head(r);
+            SelfTest.req(hc.equals("CCCCCCCC"), "C first");
+            r.pop();
+            String hd #= ZeroCopySelfTest.head(r);
+            SelfTest.req(hd.equals("DDDDDDDDDD"), "then D, across the wrap");
+        });
+
+        t.test("an encoded send reaches the peer, and a handler sees its body in place", () -> {
+            scope {
+                WebServer web #= ZeroCopySelfTest.server(4096);
+                ZeroCopySelfTest.REG #= web.connections();
+                int32 port = web.port();
+                Task<int32> srv = spawn serve(web);
+                Task<int32> c = spawn roundTrip(port, web);
+                int32 f = await c;
+                web.shutdown(Duration.ofSeconds(2));
+                await srv;
+                SelfTest.req(f == 0, "round trip");
+            }
+        });
+
+        t.test("an encoded send past the bound is refused and closes 1008", () -> {
+            scope {
+                WebServer web #= ZeroCopySelfTest.server(4096);
+                ZeroCopySelfTest.REG #= web.connections();
+                int32 port = web.port();
+                Task<int32> srv = spawn serve(web);
+                Task<int32> c = spawn overflow(port, web);
+                int32 f = await c;
+                web.shutdown(Duration.ofSeconds(2));
+                await srv;
+                SelfTest.req(f == 0, "overflow");
+            }
+        });
+    }
+}
