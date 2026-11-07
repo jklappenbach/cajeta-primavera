@@ -23,7 +23,7 @@
         // the object-store selector; cloud.cloudflare 0.2.0 adds the R2
         // component, the endpoint overrides and FakeCloudflareServer.
         "dependencies": {
-            "dev.cajeta.primavera":        "0.6.0",
+            "dev.cajeta.primavera":        "0.6.1",
             "dev.cajeta.http":             "0.9.1",
             "dev.cajeta.cloud":            "0.6.0",
             "dev.cajeta.cloud.s3":         "0.1.1",

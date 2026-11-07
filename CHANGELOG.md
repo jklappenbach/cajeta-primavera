@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1
+
+A handler that captures its own state is now kept for the server's life. The
+WebSocket paths (both `json` forms) and `Endpoints.owned<T>` borrowed the caller's
+closure, so a handler that captured a local was freed when the method that installed
+it returned, and its first call faulted. Handlers that capture nothing were never
+affected. On cajeta-http 0.9.1, built and tested on cajeta v0.51.0. No API changes.
+
 ## 0.6.0
 
 Zero-copy paths for a consumer that parses and encodes its own messages, which cabra
