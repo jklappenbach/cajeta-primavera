@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.0
+
+Zero-copy paths for a consumer that parses and encodes its own messages, which cabra
+asked for: neither side copies a message whole, since copies occupy threads and add to
+starvation even when each one is cheap. On cajeta-http 0.9.1, built and tested on cajeta
+v0.51.0. Nothing existing changes.
+
+- `JsonBody.bytes()`, `offset()` and `length()`: the message a WebSocket handler is
+  given, in place, valid during the handler under the copy-out rule. A handler that
+  parses for itself reads it there.
+- `Connection.sendEncoded(Encoded)` and `ConnectionRegistry.sendEncoded(id, e)`: an
+  `Encoded` reports its exact size and writes itself into the connection's send ring,
+  once, under the connection's lock, only when the record fits. No string is made and
+  nothing is copied. The bound and the overflow close are `send`'s.
+
 ## 0.5.1
 
 On cajeta-http 0.9.1. Server shutdown sends each open WebSocket connection a close frame

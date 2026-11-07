@@ -167,6 +167,14 @@ web.connections().broadcast("{\"registered\":\"ada\"}");
   `overflowCode` (1008 by default), so a slow reader stalls nobody else.
   `web.connections().peakQueuedBytes()` reports the high-water mark. In 0.4.0
   the bound was a message count, `queueBound(n)`, with `peakQueued()`.
+- A sender that encodes its own messages can skip the string: an `Encoded` reports
+  its exact size and writes itself into the connection's send ring, through
+  `c.sendEncoded(e)` or `web.connections().sendEncoded(id, e)`. It runs once,
+  under the connection's lock, and only when the record fits, so the bound and
+  the overflow close are `send`'s and the message is written exactly once. A
+  sender can keep one encoder and reset it per message, which allocates nothing.
+- A handler that parses messages itself reads the one it is given in place:
+  `b.bytes()[b.offset() .. b.offset() + b.length())`, under the copy-out rule.
 - A path declared with `json(path, onOpen, onMessage, onClose)` runs `onOpen`
   once the connection is in the registry and before its first message, and
   `onClose` exactly once with the close code, whatever the cause, before the
