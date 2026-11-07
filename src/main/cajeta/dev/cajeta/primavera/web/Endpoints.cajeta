@@ -81,7 +81,7 @@ public final class Endpoints {
     /** An endpoint whose body decodes into a fresh owned `T`; the buffer is free once decoded. */
     public final Endpoints owned<T>(String method, String pattern, (RequestView, T, Response) -> void handler) {
         Endpoint e = heap Endpoint(BodyMode.OWNED());
-        OwnedEndpoint<T> decoder = heap OwnedEndpoint<T>(handler);
+        OwnedEndpoint<T> decoder = heap OwnedEndpoint<T>(#handler);
         e.owned #= decoder;
         this.add(method, pattern, #e);
         return this;

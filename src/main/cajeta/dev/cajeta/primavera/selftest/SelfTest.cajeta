@@ -341,6 +341,7 @@ public class SelfTest {
         CodecSelfTest.add(t);
         IdentitySelfTest.add(t);
         SecuritySelfTest.add(t);
+        CaptureSelfTest.add(t);
 
         return t.summary();
     }

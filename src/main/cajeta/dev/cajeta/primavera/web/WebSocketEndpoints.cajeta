@@ -49,7 +49,7 @@ public final class WebSocketEndpoints {
 
     /** Accepts WebSocket connections on `path`; each message is JSON, indexed in place. */
     public WebSocketEndpoints json(String path, (Connection, JsonBody) -> void handler) {
-        WebSocketEndpoint e = heap WebSocketEndpoint(path, handler);
+        WebSocketEndpoint e = heap WebSocketEndpoint(path, #handler);
         this.list.add(#e);
         return this;
     }
@@ -64,7 +64,7 @@ public final class WebSocketEndpoints {
     public WebSocketEndpoints json(String path, (Connection) -> void onOpen,
                                    (Connection, JsonBody) -> void onMessage,
                                    (Connection, int32) -> void onClose) {
-        WebSocketEndpoint e = heap WebSocketEndpoint(path, onMessage);
+        WebSocketEndpoint e = heap WebSocketEndpoint(path, #onMessage);
         e.openH #= onOpen;
         e.hasOpen = true;
         e.closeH #= onClose;

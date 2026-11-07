@@ -1,0 +1,171 @@
+package dev.cajeta.primavera.selftest;
+
+import cajeta.concurrent.Fiber;
+import cajeta.lang.String;
+import cajeta.time.Duration;
+import dev.cajeta.http.ClientRequest;
+import dev.cajeta.http.ClientResponse;
+import dev.cajeta.http.client.HttpClient;
+import dev.cajeta.http.ws.WebSocket;
+import dev.cajeta.http.ws.WsMessage;
+import dev.cajeta.primavera.web.Connection;
+import dev.cajeta.primavera.web.Endpoints;
+import dev.cajeta.primavera.web.JsonBody;
+import dev.cajeta.primavera.web.RequestView;
+import dev.cajeta.primavera.web.Response;
+import dev.cajeta.primavera.web.WebServer;
+import dev.cajeta.primavera.web.WebServerBuilder;
+import dev.cajeta.primavera.web.WebSocketEndpoints;
+import dev.cajeta.unit.TestRunner;
+
+/**
+ * Handlers that capture. An application's handler usually closes over its
+ * own state, so every place that takes a handler must keep the closure for
+ * the server's life, not borrow it from the caller. Each handler here is
+ * installed from a helper whose frame has returned before the first request,
+ * and the heap is churned in between, so a kept borrow reads freed memory.
+ */
+public final class CaptureSelfTest {
+    static int32 seenOwned;
+    static int32 seenMessage;
+    static int32 seenHooked;
+
+    static void owned(Signup s, int32 tag, Response r) {
+        CaptureSelfTest.seenOwned = tag;
+        r.json(200).field("username", s.username).end();
+        return;
+    }
+
+    static void message(int32 tag) {
+        CaptureSelfTest.seenMessage = tag;
+        return;
+    }
+
+    static void hooked(int32 tag) {
+        CaptureSelfTest.seenHooked = tag;
+        return;
+    }
+
+    static void none(Connection c) {
+        return;
+    }
+
+    static void gone(Connection c, int32 code) {
+        return;
+    }
+
+    // Each install captures a local of its own frame, which is gone by the
+    // time a request runs the handler.
+    static void installOwned(Endpoints api) {
+        int32 tag = 41;
+        api.owned<Signup>("POST", "/owned",
+            (RequestView q, Signup s, Response r) -> CaptureSelfTest.owned(s, tag, r));
+        return;
+    }
+
+    static void installMessage(WebSocketEndpoints ws) {
+        int32 tag = 42;
+        ws.json("/plain", (Connection c, JsonBody b) -> CaptureSelfTest.message(tag));
+        return;
+    }
+
+    static void installHooked(WebSocketEndpoints ws) {
+        int32 tag = 43;
+        ws.json("/hooked", (Connection c) -> CaptureSelfTest.none(c),
+            (Connection c, JsonBody b) -> CaptureSelfTest.hooked(tag),
+            (Connection c, int32 code) -> CaptureSelfTest.gone(c, code));
+        return;
+    }
+
+    static int32 churn() {
+        int32 s = 0;
+        int32 i = 0;
+        while (i < 4000) {
+            int8[] b = heap int8[24];
+            b[0] = (int8) i;
+            s = s + (int32) b[0];
+            i = i + 1;
+        }
+        return s;
+    }
+
+    static #WebServer server() {
+        Endpoints api = heap Endpoints();
+        CaptureSelfTest.installOwned(api);
+        WebSocketEndpoints ws = heap WebSocketEndpoints();
+        CaptureSelfTest.installMessage(ws);
+        CaptureSelfTest.installHooked(ws);
+        CaptureSelfTest.churn();
+        WebServerBuilder b #= WebServer.builder();
+        b.bind("127.0.0.1:0");
+        b.endpoints(#api);
+        b.websockets(#ws);
+        return b.build();
+    }
+
+    static async int32 serve(WebServer web) {
+        web.serve();
+        return 1;
+    }
+
+    static void awaitSeen(int32 which) {
+        int32 w = 0;
+        while (w < 300) {
+            int32 v = which == 1 ? CaptureSelfTest.seenMessage : CaptureSelfTest.seenHooked;
+            if (v != 0) {
+                return;
+            }
+            Fiber.sleep(Duration.ofMillis(10));
+            w = w + 1;
+        }
+        return;
+    }
+
+    static async int32 drive(int32 port) {
+        int32 failures = 0;
+        HttpClient client = heap HttpClient();
+        ClientResponse resp = heap ClientResponse();
+        ClientRequest req #= ClientRequest.post("http://127.0.0.1:" + port + "/owned");
+        req.setHeader("Content-Type", "application/json");
+        req.body("{\"username\":\"ada\",\"password\":\"correct horse\"}");
+        client.send(req, resp);
+        if (resp.status() != 200 || CaptureSelfTest.seenOwned != 41) {
+            System.stdout.println("  capture: the owned route saw tag " + CaptureSelfTest.seenOwned);
+            failures = failures + 1;
+        }
+
+        WebSocket p #= WebSocket.connect("ws://127.0.0.1:" + port + "/plain");
+        p.send("{\"op\":\"x\"}");
+        CaptureSelfTest.awaitSeen(1);
+        if (CaptureSelfTest.seenMessage != 42) {
+            System.stdout.println("  capture: the plain path saw tag " + CaptureSelfTest.seenMessage);
+            failures = failures + 1;
+        }
+        p.close(1000, "done");
+
+        WebSocket h #= WebSocket.connect("ws://127.0.0.1:" + port + "/hooked");
+        h.send("{\"op\":\"x\"}");
+        CaptureSelfTest.awaitSeen(2);
+        if (CaptureSelfTest.seenHooked != 43) {
+            System.stdout.println("  capture: the hooked path saw tag " + CaptureSelfTest.seenHooked);
+            failures = failures + 1;
+        }
+        h.close(1000, "done");
+        return failures;
+    }
+
+    public static void add(TestRunner t) {
+        t.test("a capturing handler is kept for the server's life: owned routes and both WebSocket forms", () -> {
+            scope {
+                WebServer web #= CaptureSelfTest.server();
+                int32 port = web.port();
+                Task<int32> srv = spawn serve(web);
+                Task<int32> c = spawn drive(port);
+                int32 f = await c;
+                web.shutdown(Duration.ofSeconds(2));
+                await srv;
+                SelfTest.req(f == 0, "every capturing handler saw its own tag");
+            }
+        });
+    }
+}
